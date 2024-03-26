@@ -1,20 +1,7230 @@
-local library = sharedRequire('@UILibrary.lua');
+sharedRequires['16AltManagerAPI'] = (function()
+	local Account = {} Account.__index = Account
 
-local ToastNotif = sharedRequire('@classes/ToastNotif.lua');
-local TextLogger = sharedRequire('@classes/TextLogger.lua');
-local EntityESP = sharedRequire('@classes/EntityESP.lua');
-local ControlModule = sharedRequire('@classes/ControlModule.lua');
+local WebserverSettings = {
+    Port = '7963',
+    Password = ''
+}
 
-local createBaseESP = sharedRequire('@utils/createBaseESP.lua');
-local toCamelCase = sharedRequire('@utils/toCamelCase.lua');
-local prettyPrint = sharedRequire('@utils/prettyPrint.lua');
-local findPlayer = sharedRequire('@utils/findPlayer.lua');
-local getImageSize = sharedRequire('@utils/getImageSize.lua');
+function WebserverSettings:SetPort(Port) self.Port = Port end
+function WebserverSettings:SetPassword(Password) self.Password = Password end
 
-local Services = sharedRequire('@utils/Services.lua');
-local Utility = sharedRequire('@utils/Utility.lua');
-local Maid = sharedRequire('@utils/Maid.lua');
-local BlockUtils = sharedRequire('@utils/BlockUtils.lua');
+local HttpService = game:GetService'HttpService'
+local Request = syn.request;
+
+local function GET(Method, Account, ...)
+    local Arguments = {...}
+    local Url = 'http://localhost:' .. WebserverSettings.Port .. '/' .. Method .. '?Account=' .. Account
+
+    for Index, Parameter in pairs(Arguments) do
+        Url = Url .. '&' .. Parameter
+    end
+
+    if WebserverSettings.Password and #WebserverSettings.Password >= 6 then
+        Url = Url .. '&Password=' .. WebserverSettings.Password
+    end
+    
+    local Response = Request {
+        Method = 'GET',
+        Url = Url
+    }
+
+    if Response.StatusCode ~= 200 then return false end
+
+    return Response.Body
+end
+
+local function POST(Method, Account, Body, ...)
+    local Arguments = {...}
+    local Url = 'http://localhost:' .. WebserverSettings.Port .. '/' .. Method .. '?Account=' .. Account
+
+    for Index, Parameter in pairs(Arguments) do
+        Url = '&' .. Url .. Parameter
+    end
+
+    if WebserverSettings.Password and #WebserverSettings.Password >= 6 then
+        Url = Url .. '&Password=' .. WebserverSettings.Password
+    end
+    
+    local Response = Request {
+        Method = 'POST',
+        Url = Url,
+        Body = Body
+    }
+
+    if Response.StatusCode ~= 200 then return false end
+
+    return Response.Body
+end
+
+function Account.new(Username, SkipValidation)
+    local self = {} setmetatable(self, Account)
+
+    local IsValid = SkipValidation or GET('GetCSRFToken', Username)
+
+    if not IsValid or IsValid == 'Invalid Account' then return false end
+
+    self.Username = Username
+
+    return self
+end
+
+function Account:GetCSRFToken() return GET('GetCSRFToken', self.Username) end
+
+function Account:BlockUser(Argument)
+    if typeof(Argument) == 'string' then
+        return GET('BlockUser', self.Username, 'UserId=' .. Argument)
+    elseif typeof(Argument) == 'Instance' and Argument:IsA'Player' then
+        return self:BlockUser(tostring(Argument.UserId))
+    elseif typeof(Argument) == 'number' then
+        return self:BlockUser(tostring(Argument))
+    end
+end
+function Account:UnblockUser(Argument)
+    if typeof(Argument) == 'string' then
+        return GET('UnblockUser', self.Username, 'UserId=' .. Argument)
+    elseif typeof(Argument) == 'Instance' and Argument:IsA'Player' then
+        return self:BlockUser(tostring(Argument.UserId))
+    elseif typeof(Argument) == 'number' then
+        return self:BlockUser(tostring(Argument))
+    end
+end
+function Account:GetBlockedList() return GET('GetBlockedList', self.Username) end
+function Account:UnblockEveryone() return GET('UnblockEveryone', self.Username) end
+
+function Account:GetAlias() return GET('GetAlias', self.Username) end
+function Account:GetDescription() return GET('GetDescription', self.Username) end
+function Account:SetAlias(Alias) return POST('SetAlias', self.Username, Alias) end
+function Account:SetDescription(Description) return POST('SetDescription', self.Username, Description) end
+function Account:AppendDescription(Description) return POST('AppendDescription', self.Username, Description) end
+
+function Account:GetField(Field) return GET('GetField', self.Username, 'Field=' .. HttpService:UrlEncode(Field)) end
+function Account:SetField(Field, Value) return GET('SetField', self.Username, 'Field=' .. HttpService:UrlEncode(Field), 'Value=' .. HttpService:UrlEncode(tostring(Value))) end
+function Account:RemoveField(Field) return GET('RemoveField', self.Username, 'Field=' .. HttpService:UrlEncode(Field)) end
+
+function Account:SetServer(PlaceId, JobId) return GET('SetServer', self.Username, 'PlaceId=' .. PlaceId, 'JobId=' .. JobId) end
+function Account:SetRecommendedServer(PlaceId) return GET('SetServer', self.Username, 'PlaceId=' .. PlaceId) end
+
+function Account:ImportCookie(Token) return GET('ImportCookie', 'Cookie=' .. Token) end
+function Account:GetCookie() return GET('GetCookie', self.Username) end
+function Account:LaunchAccount(PlaceId, JobId, FollowUser, JoinVip) -- if you want to follow someone, PlaceId must be their user id
+    return GET('LaunchAccount', self.Username, 'PlaceId=' .. PlaceId, JobId and ('JobId=' .. JobId), FollowUser and 'FollowUser=true', JoinVip and 'JoinVIP=true')
+end
+
+return Account, WebserverSettings
+end)();
+
+sharedRequires['15Signal'] = (function()
+	SX_VM_CNONE();
+--- Lua-side duplication of the API of events on Roblox objects.
+-- Signals are needed for to ensure that for local events objects are passed by
+-- reference rather than by value where possible, as the BindableEvent objects
+-- always pass signal arguments by value, meaning tables will be deep copied.
+-- Roblox's deep copy method parses to a non-lua table compatable format.
+-- @classmod Signal
+
+local Signal = {}
+Signal.__index = Signal
+Signal.ClassName = "Signal"
+
+--- Constructs a new signal.
+-- @constructor Signal.new()
+-- @treturn Signal
+function Signal.new()
+	local self = setmetatable({}, Signal)
+
+	self._bindableEvent = Instance.new("BindableEvent")
+	self._argData = nil
+	self._argCount = nil -- Prevent edge case of :Fire("A", nil) --> "A" instead of "A", nil
+
+	return self
+end
+
+function Signal.isSignal(object)
+	return typeof(object) == 'table' and getmetatable(object) == Signal;
+end;
+
+--- Fire the event with the given arguments. All handlers will be invoked. Handlers follow
+-- Roblox signal conventions.
+-- @param ... Variable arguments to pass to handler
+-- @treturn nil
+function Signal:Fire(...)
+	self._argData = {...}
+	self._argCount = select("#", ...)
+	self._bindableEvent:Fire()
+	self._argData = nil
+	self._argCount = nil
+end
+
+--- Connect a new handler to the event. Returns a connection object that can be disconnected.
+-- @tparam function handler Function handler called with arguments passed when `:Fire(...)` is called
+-- @treturn Connection Connection object that can be disconnected
+function Signal:Connect(handler)
+	if not self._bindableEvent then return error("Signal has been destroyed"); end --Fixes an error while respawning with the UI injected
+
+	if not (type(handler) == "function") then
+		error(("connect(%s)"):format(typeof(handler)), 2)
+	end
+
+	return self._bindableEvent.Event:Connect(function()
+		handler(unpack(self._argData, 1, self._argCount))
+	end)
+end
+
+--- Wait for fire to be called, and return the arguments it was given.
+-- @treturn ... Variable arguments from connection
+function Signal:Wait()
+	self._bindableEvent.Event:Wait()
+	assert(self._argData, "Missing arg data, likely due to :TweenSize/Position corrupting threadrefs.")
+	return unpack(self._argData, 1, self._argCount)
+end
+
+--- Disconnects all connected events to the signal. Voids the signal as unusable.
+-- @treturn nil
+function Signal:Destroy()
+	if self._bindableEvent then
+		self._bindableEvent:Destroy()
+		self._bindableEvent = nil
+	end
+
+	self._argData = nil
+	self._argCount = nil
+end
+
+return Signal
+end)();
+
+sharedRequires['13Maid'] = (function()
+	---	Manages the cleaning of events and other things.
+-- Useful for encapsulating state and make deconstructors easy
+-- @classmod Maid
+-- @see Signal
+
+local Signal = sharedRequire('15Signal');
+local tableStr = getServerConstant('table');
+local classNameStr = getServerConstant('Maid');
+local funcStr = getServerConstant('function');
+local threadStr = getServerConstant('thread');
+
+local Maid = {}
+Maid.ClassName = "Maid"
+
+--- Returns a new Maid object
+-- @constructor Maid.new()
+-- @treturn Maid
+function Maid.new()
+	return setmetatable({
+		_tasks = {}
+	}, Maid)
+end
+
+function Maid.isMaid(value)
+	return type(value) == tableStr and value.ClassName == classNameStr
+end
+
+--- Returns Maid[key] if not part of Maid metatable
+-- @return Maid[key] value
+function Maid.__index(self, index)
+	if Maid[index] then
+		return Maid[index]
+	else
+		return self._tasks[index]
+	end
+end
+
+--- Add a task to clean up. Tasks given to a maid will be cleaned when
+--  maid[index] is set to a different value.
+-- @usage
+-- Maid[key] = (function)         Adds a task to perform
+-- Maid[key] = (event connection) Manages an event connection
+-- Maid[key] = (Maid)             Maids can act as an event connection, allowing a Maid to have other maids to clean up.
+-- Maid[key] = (Object)           Maids can cleanup objects with a `Destroy` method
+-- Maid[key] = nil                Removes a named task. If the task is an event, it is disconnected. If it is an object,
+--                                it is destroyed.
+function Maid:__newindex(index, newTask)
+	if Maid[index] ~= nil then
+		error(("'%s' is reserved"):format(tostring(index)), 2)
+	end
+
+	local tasks = self._tasks
+	local oldTask = tasks[index]
+
+	if oldTask == newTask then
+		return
+	end
+
+	tasks[index] = newTask
+
+	if oldTask then
+		if type(oldTask) == "function" then
+			oldTask()
+		elseif typeof(oldTask) == "RBXScriptConnection" then
+			oldTask:Disconnect();
+		elseif typeof(oldTask) == 'table' then
+			oldTask:Remove();
+		elseif (Signal.isSignal(oldTask)) then
+			oldTask:Destroy();
+		elseif (typeof(oldTask) == 'thread') then
+			task.cancel(oldTask);
+		elseif oldTask.Destroy then
+			oldTask:Destroy();
+		end
+	end
+end
+
+--- Same as indexing, but uses an incremented number as a key.
+-- @param task An item to clean
+-- @treturn number taskId
+function Maid:GiveTask(task)
+	if not task then
+		error("Task cannot be false or nil", 2)
+	end
+
+	local taskId = #self._tasks+1
+	self[taskId] = task
+
+	return taskId
+end
+
+--- Cleans up all tasks.
+-- @alias Destroy
+function Maid:DoCleaning()
+	local tasks = self._tasks
+
+	-- Disconnect all events first as we know this is safe
+	for index, task in pairs(tasks) do
+		if typeof(task) == "RBXScriptConnection" then
+			tasks[index] = nil
+			task:Disconnect()
+		end
+	end
+
+	-- Clear out tasks table completely, even if clean up tasks add more tasks to the maid
+	local index, taskData = next(tasks)
+	while taskData ~= nil do
+		tasks[index] = nil
+		if type(taskData) == funcStr then
+			taskData()
+		elseif typeof(taskData) == "RBXScriptConnection" then
+			taskData:Disconnect()
+		elseif (Signal.isSignal(taskData)) then
+			taskData:Destroy();
+		elseif typeof(taskData) == tableStr then
+			taskData:Remove();
+		elseif (typeof(taskData) == threadStr) then
+			task.cancel(taskData);
+		elseif taskData.Destroy then
+			taskData:Destroy()
+		end
+		index, taskData = next(tasks)
+	end
+end
+
+--- Alias for DoCleaning()
+-- @function Destroy
+Maid.Destroy = Maid.DoCleaning
+
+return Maid;
+end)();
+
+sharedRequires['7toCamelCase'] = (function()
+local stringPattern = getServerConstant('%s(.)');
+return function (text)
+    return string.lower(text):gsub(stringPattern, string.upper);
+end;
+end)();
+sharedRequires['8prettyPrint'] = (function()
+type = typeof or type
+local str_types = {
+    ['boolean'] = true,
+    ['userdata'] = true,
+    ['table'] = true,
+    ['function'] = true,
+    ['number'] = true,
+    ['nil'] = true
+}
+
+local function count_table(t)
+    local c = 0
+    for i, v in next, t do
+        c = c + 1
+    end
+
+    return c
+end
+
+local function string_ret(o, typ)
+    local ret, mt, old_func
+    if not (typ == 'table' or typ == 'userdata') then
+        return tostring(o)
+    end
+    mt = (getrawmetatable or getmetatable)(o)
+    if not mt then 
+        return tostring(o)
+    end
+
+    old_func = rawget(mt, '__tostring')
+    rawset(mt, '__tostring', nil)
+    ret = tostring(o)
+    rawset(mt, '__tostring', old_func)
+    return ret
+end
+
+local function format_value(v)
+    local typ = type(v)
+
+    if str_types[typ] then
+        return string_ret(v, typ)
+    elseif typ == 'string' then
+        return '"'..v..'"'
+    elseif typ == 'Instance' then
+        return v.GetFullName(v)
+    else
+        return typ..'.new(' .. tostring(v) .. ')'
+    end
+end
+
+local function serialize_table(t, p, c, s)
+    local str = ""
+    local n = count_table(t)
+    local ti = 1
+    local e = n > 0
+
+    c = c or {}
+    p = p or 1
+    s = s or string.rep
+
+    local function localized_format(v, is_table)
+        return is_table and (c[v][2] >= p) and serialize_table(v, p + 1, c, s) or format_value(v)
+    end
+
+    c[t] = {t, 0}
+
+    for i, v in next, t do
+        local typ_i, typ_v = type(i) == 'table', type(v) == 'table'
+        c[i], c[v] = (not c[i] and typ_i) and {i, p} or c[i], (not c[v] and typ_v) and {v, p} or c[v]
+        str = str .. s('  ', p) .. '[' .. localized_format(i, typ_i) .. '] = '  .. localized_format(v, typ_v) .. (ti < n and ',' or '') .. '\n'
+        ti = ti + 1
+    end
+
+    return ('{' .. (e and '\n' or '')) .. str .. (e and s('  ', p - 1) or '') .. '}'
+end
+
+if (debugMode) then
+    getgenv().prettyPrint = serialize_table;
+end;
+
+return serialize_table
+end)();
+sharedRequires['9findPlayer'] = (function()
+	local Services = sharedRequire('11Services');
+local Players = Services:Get('Players');
+
+return function (playerName)
+    for _, v in next, Players:GetPlayers() do
+        if(v.Name:lower():sub(1, #playerName) == playerName:lower()) then
+            return v;
+        end;
+    end;
+end;
+end)();
+sharedRequires['10getImageSize'] = (function()
+	local Buffer = {};
+
+Buffer.ClassName = 'Buffer';
+Buffer.__index = Buffer;
+
+function Buffer.new(data)
+    local self = setmetatable({}, Buffer);
+
+    self._data = data;
+    self._pos = 0;
+
+    return self;
+end;
+
+function Buffer:read(num)
+    local data = self._data:sub(self._pos + 1, self._pos + num);
+    self._pos = self._pos + num;
+
+    return data;
+end;
+
+local function read(str)
+    return str:sub(1,1):byte() * 16777216 + str:sub(2,2):byte() * 65536 + str:sub(3,3):byte() * 256 + str:sub(4,4):byte();
+end;
+
+local function getImageSize(imageData)
+    local buffer = Buffer.new(imageData);
+
+    buffer:read(1);
+
+    if(buffer:read(3) == 'PNG') then
+        buffer:read(12);
+
+        local width = read(buffer:read(4));
+        local height = read(buffer:read(4));
+
+        return Vector2.new(width, height);
+    end;
+
+    buffer:read(-4);
+
+    if (buffer:read(4) == "GIF8") then
+        buffer:read(2);
+
+        local width = buffer:read(1):byte()+buffer:read(1):byte()*256;
+        local height = buffer:read(1):byte()+buffer:read(1):byte()*256;
+
+        return Vector2.new(width, height);
+    end;
+end;
+
+return getImageSize;
+end)();
+sharedRequires['17KeyBindVisualizer'] = (function()
+	local Services = sharedRequire('11Services');
+local UserInputService = Services:Get('UserInputService');
+local Maid = sharedRequire('13Maid');
+
+local keybindVisualizer = {};
+keybindVisualizer.__index = keybindVisualizer;
+
+local viewportSize = workspace.CurrentCamera.ViewportSize;
+local library;
+
+function keybindVisualizer.new()
+    local self = setmetatable({}, keybindVisualizer);
+
+    self._textSizes = {};
+    self._maid = Maid.new();
+
+    self:_init();
+
+    local dragObject;
+    local dragging;
+    local dragStart;
+    local startPos;
+
+    self._maid:GiveTask(UserInputService.InputBegan:Connect(function(input)
+        if (input.UserInputType == Enum.UserInputType.MouseButton1 and self:MouseInFrame()) then
+            dragObject = self._textBox
+            dragging = true
+            dragStart = input.Position
+            startPos = dragObject.Position
+        end;
+    end));
+
+    self._maid:GiveTask(UserInputService.InputChanged:connect(function(input)
+        if dragging and input.UserInputType.Name == 'MouseMovement' and not self._destroyed then
+            if dragging then
+                local delta = input.Position - dragStart;
+                local yPos = (startPos.Y + delta.Y) < -36 and -36 or startPos.Y + delta.Y;
+
+                self._textBox.Position = Vector2.new(startPos.X + delta.X,  yPos);
+                library.configVars.keybindVisualizerPos = tostring(self._textBox.Position);
+            end;
+        end;
+    end));
+
+    self._maid:GiveTask(UserInputService.InputEnded:connect(function(input)
+        if input.UserInputType.Name == 'MouseButton1' then
+            dragging = false
+        end
+    end));
+
+    library.OnLoad:Connect(function()
+        if (not library.configVars.keybindVisualizerPos) then return end;
+        self._textBox.Position = Vector2.new(unpack(library.configVars.keybindVisualizerPos:split(',')));
+    end);
+
+    return self;
+end;
+
+function keybindVisualizer:_getTextBounds(text, fontSize)
+    local t = Drawing.new('Text');
+    t.Text = text;
+    t.Size = fontSize;
+
+    local res = t.TextBounds;
+    t:Remove();
+    return res.X;
+end;
+
+function keybindVisualizer:_createDrawingInstance(instanceType, properties)
+    local instance = Drawing.new(instanceType);
+
+    if (properties.Visible == nil) then
+        properties.Visible = true;
+    end;
+
+    for i,  v in next,  properties do
+        instance[i] = v;
+    end;
+
+    return instance;
+end;
+
+function keybindVisualizer:_init()
+    self._textBox = self:_createDrawingInstance('Text', {
+        Size = 30,
+        Position = viewportSize-Vector2.new(180, viewportSize.Y/2),
+        Color = Color3.new(255, 255, 255)
+    });
+end
+
+function keybindVisualizer:GetLargest()
+    table.sort(self._textSizes, function(a, b) return a.magnitude>b.magnitude; end)
+    return self._textSizes[1] or Vector2.new(0, 30);
+end
+
+function keybindVisualizer:AddText(txt)
+    if (self._destroyed) then return end;
+    self._largest = self:GetLargest();
+
+    local tab = string.split(self._textBox.Text, '\n');
+    if (table.find(tab, txt)) then return end;
+
+    local textSize = Vector2.new(self:_getTextBounds(txt, 30), 30);
+    table.insert(self._textSizes, textSize);
+
+    table.insert(tab, txt);
+    table.sort(tab, function(a, b) return #a < #b; end)
+
+    self._textBox.Text = table.concat(tab, '\n');
+    self._textBox.Position -= Vector2.new(0, 30);
+end
+
+function keybindVisualizer:MouseInFrame()
+	local mousePos = UserInputService:GetMouseLocation();
+	local framePos = self._textBox.Position;
+	local bottomRight = framePos + self._textBox.TextBounds
+
+	return (mousePos.X >= framePos.X and mousePos.X <= bottomRight.X) and (mousePos.Y >= framePos.Y and mousePos.Y <= bottomRight.Y)
+end;
+
+function keybindVisualizer:RemoveText(txt)
+    if (self._destroyed) then return end;
+    local textSize = Vector2.new(self:_getTextBounds(txt, 30), 30);
+	table.remove(self._textSizes, table.find(self._textSizes,  textSize));
+
+    self._largest = self:GetLargest();
+
+    local tab = string.split(self._textBox.Text, '\n');
+    table.remove(tab, table.find(tab, txt));
+
+    self._textBox.Text = table.concat(tab, '\n');
+    self._textBox.Position += Vector2.new(0, 30);
+end
+
+function keybindVisualizer:UpdateColor(color)
+    if (self._destroyed) then return end;
+    self._textBox.Color = color;
+end;
+
+function keybindVisualizer:SetEnabled(state)
+    if (self._destroyed) then return end;
+    self._textBox.Visible = state;
+end;
+
+function keybindVisualizer:Remove()
+    self._destroyed = true;
+    self._maid:Destroy();
+    self._textBox:Remove();
+end;
+
+function keybindVisualizer.init(newLibrary)
+    library = newLibrary;
+end;
+
+return keybindVisualizer;
+end)();
+sharedRequires['11Services'] = (function()
+local Services = {};
+local vim = getvirtualinputmanager and getvirtualinputmanager();
+
+function Services:Get(...)
+    local allServices = {};
+
+    for _, service in next, {...} do
+        table.insert(allServices, self[service]);
+    end
+
+    return unpack(allServices);
+end;
+
+setmetatable(Services, {
+    __index = function(self, p)
+        if (p == 'VirtualInputManager' and vim) then
+            return vim;
+        end;
+
+        local service = game:GetService(p);
+        if (p == 'VirtualInputManager') then
+            service.Name = getServerConstant('VirtualInputManager ');
+        end;
+
+        rawset(self, p, service);
+        return rawget(self, p);
+    end,
+});
+
+return Services;
+end)();
+sharedRequires['12Utility'] = (function()
+	local Services = sharedRequire('11Services');
+local library = sharedRequire('1library');
+local Signal = sharedRequire('15Signal');
+
+local Players, UserInputService, HttpService, CollectionService = Services:Get('Players', 'UserInputService', 'HttpService', 'CollectionService');
+local LocalPlayer = Players.LocalPlayer;
+
+local Utility = {};
+
+Utility.onPlayerAdded = Signal.new();
+Utility.onCharacterAdded = Signal.new();
+Utility.onLocalCharacterAdded = Signal.new();
+
+local mathFloor = clonefunction(math.floor)
+local isDescendantOf = clonefunction(game.IsDescendantOf);
+local findChildIsA = clonefunction(game.FindFirstChildWhichIsA);
+local findFirstChild = clonefunction(game.FindFirstChild);
+
+local IsA = clonefunction(game.IsA);
+
+local getMouseLocation = clonefunction(UserInputService.GetMouseLocation);
+local getPlayers = clonefunction(Players.GetPlayers);
+
+local worldToViewportPoint = clonefunction(Instance.new(getServerConstant('Camera')).WorldToViewportPoint);
+
+function Utility:countTable(t)
+    local found = 0;
+
+    for i, v in next, t do
+        found = found + 1;
+    end;
+
+    return found;
+end;
+
+function Utility:roundVector(vector)
+    return Vector3.new(vector.X, 0, vector.Z);
+end;
+
+function Utility:getCharacter(player)
+    local playerData = self:getPlayerData(player);
+    if (not playerData.alive) then return end;
+
+    local maxHealth, health = playerData.maxHealth, playerData.health;
+    return playerData.character, maxHealth, (health / maxHealth) * 100, mathFloor(health), playerData.rootPart;
+end;
+
+function Utility:isTeamMate(player)
+    local playerData, myPlayerData = self:getPlayerData(player), self:getPlayerData();
+    local playerTeam, myTeam = playerData.team, myPlayerData.team;
+
+    if(playerTeam == nil or myTeam == nil) then
+        return false;
+    end;
+
+    return playerTeam == myTeam;
+end;
+
+function Utility:getRootPart(player)
+    local playerData = self:getPlayerData(player);
+    return playerData and playerData.rootPart;
+end;
+
+function Utility:renderOverload(data) end;
+
+local function castPlayer(origin, direction, rayParams, playerToFind)
+    local distanceTravalled = 0;
+
+    while true do
+        distanceTravalled = distanceTravalled + direction.Magnitude;
+
+        local target = workspace:Raycast(origin, direction, rayParams);
+
+        if(target) then
+            if(isDescendantOf(target.Instance, playerToFind)) then
+                return false;
+            elseif(target and target.Instance.CanCollide) then
+                return true;
+            end;
+        elseif(distanceTravalled > 2000) then
+            return false;
+        end;
+
+        origin = origin + direction;
+    end;
+end;
+
+function Utility:getClosestCharacter(rayParams)
+    rayParams = rayParams or RaycastParams.new();
+    rayParams.FilterDescendantsInstances = {}
+
+    local myCharacter = Utility:getCharacter(LocalPlayer);
+    local myHead = myCharacter and findFirstChild(myCharacter, 'Head');
+    if(not myHead) then return end;
+
+    if(rayParams.FilterType == Enum.RaycastFilterType.Blacklist) then
+        table.insert(rayParams.FilterDescendantsInstances, myHead.Parent);
+    end;
+
+    local camera = workspace.CurrentCamera;
+    if(not camera) then return end;
+
+    local mousePos = library.flags.useFOV and getMouseLocation(UserInputService);
+    local lastDistance, lastPlayer = math.huge, {};
+
+    local maxFov = library.flags.useFOV and library.flags.aimbotFOV or math.huge;
+    local whitelistedPlayers = library.options.aimbotWhitelistedPlayers.values;
+
+    for _, player in next, getPlayers(Players) do
+        if(player == LocalPlayer or table.find(whitelistedPlayers, player.Name)) then continue end;
+
+        local character, health = Utility:getCharacter(player);
+
+        if(not character or health <= 0 or findChildIsA(character, 'ForceField')) then continue; end;
+        if(library.flags.checkTeam and Utility:isTeamMate(player)) then continue end;
+
+        local head = character and findFirstChild(character, 'Head');
+        if(not head) then continue end;
+
+        local newDistance = (myHead.Position - head.Position).Magnitude;
+        if(newDistance > lastDistance) then continue end;
+
+        if (mousePos) then
+            local screenPosition, visibleOnScreen = worldToViewportPoint(camera, head.Position);
+            screenPosition = Vector2.new(screenPosition.X, screenPosition.Y);
+
+            if((screenPosition - mousePos).Magnitude > maxFov or not visibleOnScreen) then continue end;
+        end;
+
+        local isBehindWall = library.flags.visibilityCheck and castPlayer(myHead.Position, (head.Position - myHead.Position).Unit * 100, rayParams, head.Parent);
+        if (isBehindWall) then continue end;
+
+        lastPlayer = {Player = player, Character = character, Health = health};
+        lastDistance = newDistance;
+    end;
+
+    return lastPlayer, lastDistance;
+end;
+
+function Utility:getClosestCharacterWithEntityList(entityList, rayParams, options)
+    rayParams = rayParams or RaycastParams.new();
+    rayParams.FilterDescendantsInstances = {}
+
+    options = options or {};
+    options.maxDistance = options.maxDistance or math.huge;
+
+    local myCharacter = Utility:getCharacter(LocalPlayer);
+    local myHead = myCharacter and findFirstChild(myCharacter, 'Head');
+    if(not myHead) then return end;
+
+    if(rayParams.FilterType == Enum.RaycastFilterType.Blacklist) then
+        table.insert(rayParams.FilterDescendantsInstances, myHead.Parent);
+    end;
+
+    local camera = workspace.CurrentCamera;
+    if(not camera) then return end;
+
+    local mousePos = library.flags.useFOV and getMouseLocation(UserInputService);
+    local lastDistance, lastPlayer = math.huge, {};
+    local whitelistedPlayers = library.options.aimbotWhitelistedPlayers.values;
+
+    local maxFov = library.flags.useFOV and library.flags.aimbotFOV or math.huge;
+
+    for _, player in next, entityList do
+        if(player == myCharacter or table.find(whitelistedPlayers, player.Name)) then continue end;
+
+        local humanoid = findChildIsA(player, 'Humanoid');
+        if (not humanoid or humanoid.Health <= 0) then continue end;
+
+        local character = player;
+
+        if(not character or findChildIsA(character, 'ForceField')) then continue; end;
+
+        local head = character and findFirstChild(character, 'Head');
+        if(not head) then continue end;
+
+        local newDistance = (myHead.Position - head.Position).Magnitude;
+        if(newDistance > lastDistance or newDistance > options.maxDistance) then continue end;
+
+        if (mousePos) then
+            local screenPosition, visibleOnScreen = worldToViewportPoint(camera, head.Position);
+            screenPosition = Vector2.new(screenPosition.X, screenPosition.Y);
+
+            if((screenPosition - mousePos).Magnitude > maxFov or not visibleOnScreen) then continue end;
+        end;
+
+        local isBehindWall = library.flags.visibilityCheck and castPlayer(myHead.Position, (head.Position - myHead.Position).Unit * 100, rayParams, head.Parent);
+        if (isBehindWall) then continue end;
+
+        lastPlayer = {Player = player, Character = character, Health = humanoid.Health};
+        lastDistance = newDistance;
+    end;
+
+    return lastPlayer, lastDistance;
+end;
+
+function panic()
+    library:Unload();
+end;
+
+local playersData = {};
+
+local function onCharacterAdded(player)
+    local playerData = playersData[player];
+    if (not playerData) then return end;
+
+    local character = player.Character;
+    if (not character) then return end;
+
+    local localAlive = true;
+
+    table.clear(playerData.parts);
+
+    Utility.listenToChildAdded(character, function(obj)
+        if (obj.Name == 'Humanoid') then
+            playerData.humanoid = obj;
+        elseif (obj.Name == 'HumanoidRootPart') then
+            playerData.rootPart = obj;
+        elseif (obj.Name == 'Head') then
+            playerData.head = obj;
+        end;
+    end);
+
+    if (player == LocalPlayer) then
+        Utility.listenToDescendantAdded(character, function(obj)
+            if (IsA(obj, 'BasePart')) then
+                table.insert(playerData.parts, obj);
+
+                local con;
+                con = obj:GetPropertyChangedSignal('Parent'):Connect(function()
+                    if (obj.Parent) then return end;
+                    con:Disconnect();
+                    table.remove(playerData.parts, table.find(playerData.parts, obj));
+                end);
+            end;
+        end);
+    end;
+
+    local function onPrimaryPartChanged()
+        playerData.primaryPart = character.PrimaryPart;
+        playerData.alive = not not playerData.primaryPart;
+    end
+
+    local hum = character:WaitForChild('Humanoid', 30);
+    playerData.humanoid = hum;
+    if (not playerData.humanoid) then return warn('[Utility] [onCharacterAdded] Player is missing humanoid ' .. player:GetFullName()) end;
+    if (not player.Parent or not character.Parent) then return end;
+
+    character:GetPropertyChangedSignal('PrimaryPart'):Connect(onPrimaryPartChanged);
+
+    if (character.PrimaryPart) then
+        onPrimaryPartChanged();
+    end;
+
+    playerData.character = character;
+    playerData.alive = true;
+    playerData.health = playerData.humanoid.Health;
+    playerData.maxHealth = playerData.humanoid.MaxHealth;
+
+    hum.Destroying:Connect(function()
+        playerData.alive = false;
+        localAlive = false;
+    end);
+
+    hum.Died:Connect(function()
+        playerData.alive = false;
+        localAlive = false;
+    end);
+
+    playerData.humanoid:GetPropertyChangedSignal('Health'):Connect(function()
+        playerData.health = hum.Health;
+    end);
+
+    playerData.humanoid:GetPropertyChangedSignal('MaxHealth'):Connect(function()
+        playerData.maxHealth = hum.MaxHealth;
+    end);
+
+    local function fire()
+        if (not localAlive) then return end;
+        Utility.onCharacterAdded:Fire(playerData);
+
+        if (player == LocalPlayer) then
+            Utility.onLocalCharacterAdded:Fire(playerData);
+        end;
+    end;
+
+    if (library.OnLoad) then
+        library.OnLoad:Connect(fire);
+    else
+        fire();
+    end;
+end;
+
+local function onPlayerAdded(player)
+    local playerData = {};
+
+    playerData.player = player;
+    playerData.team = player.Team;
+    playerData.parts = {};
+
+    playersData[player] = playerData;
+
+    local function fire()
+        Utility.onPlayerAdded:Fire(player);
+    end;
+
+    task.spawn(onCharacterAdded, player);
+
+    player.CharacterAdded:Connect(function()
+        onCharacterAdded(player);
+    end);
+
+    player:GetPropertyChangedSignal('Team'):Connect(function()
+        playerData.team = player.Team;
+    end);
+
+    if (library.OnLoad) then
+        library.OnLoad:Connect(fire);
+    else
+        fire();
+    end;
+end;
+
+function Utility:getPlayerData(player)
+    return playersData[player or LocalPlayer] or {};
+end;
+
+function Utility.listenToChildAdded(folder, listener, options)
+    options = options or {listenToDestroying = false};
+
+    local createListener = typeof(listener) == 'table' and listener.new or listener;
+
+    assert(typeof(folder) == 'Instance', 'listenToChildAdded folder #1 listener has to be an instance');
+    assert(typeof(createListener) == 'function', 'listenToChildAdded #2 listener has to be a function');
+
+    local function onChildAdded(child)
+        local listenerObject = createListener(child);
+
+        if (options.listenToDestroying) then
+            child.Destroying:Connect(function()
+                local removeListener = typeof(listener) == 'table' and (function() local a = (listener.Destroy or listener.Remove); a(listenerObject) end) or listenerObject;
+
+                if (typeof(removeListener) ~= 'function') then
+                    warn('[Utility] removeListener is not definded possible memory leak for', folder);
+                else
+                    removeListener(child);
+                end;
+            end);
+        end;
+    end
+
+    debug.profilebegin(string.format('Utility.listenToChildAdded(%s)', folder:GetFullName()));
+
+    for _, child in next, folder:GetChildren() do
+        task.spawn(onChildAdded, child);
+    end;
+
+    debug.profileend();
+
+    return folder.ChildAdded:Connect(createListener);
+end;
+
+function Utility.listenToChildRemoving(folder, listener)
+    local createListener = typeof(listener) == 'table' and listener.new or listener;
+
+    assert(typeof(folder) == 'Instance', 'listenToChildRemoving folder #1 listener has to be an instance');
+    assert(typeof(createListener) == 'function', 'listenToChildRemoving #2 listener has to be a function');
+
+    return folder.ChildRemoved:Connect(createListener);
+end;
+
+function Utility.listenToDescendantAdded(folder, listener, options)
+    options = options or {listenToDestroying = false};
+
+    local createListener = typeof(listener) == 'table' and listener.new or listener;
+
+    assert(typeof(folder) == 'Instance', 'listenToDescendantAdded folder #1 listener has to be an instance');
+    assert(typeof(createListener) == 'function', 'listenToDescendantAdded #2 listener has to be a function');
+
+    local function onDescendantAdded(child)
+        local listenerObject = createListener(child);
+
+        if (options.listenToDestroying) then
+            child.Destroying:Connect(function()
+                local removeListener = typeof(listener) == 'table' and (listener.Destroy or listener.Remove) or listenerObject;
+
+                if (typeof(removeListener) ~= 'function') then
+                    warn('[Utility] removeListener is not definded possible memory leak for', folder);
+                else
+                    removeListener(child);
+                end;
+            end);
+        end;
+    end
+
+    debug.profilebegin(string.format('Utility.listenToDescendantAdded(%s)', folder:GetFullName()));
+
+    for _, child in next, folder:GetDescendants() do
+        task.spawn(onDescendantAdded, child);
+    end;
+
+    debug.profileend();
+
+    return folder.DescendantAdded:Connect(onDescendantAdded);
+end;
+
+function Utility.listenToDescendantRemoving(folder, listener)
+    local createListener = typeof(listener) == 'table' and listener.new or listener;
+
+    assert(typeof(folder) == 'Instance', 'listenToDescendantRemoving folder #1 listener has to be an instance');
+    assert(typeof(createListener) == 'function', 'listenToDescendantRemoving #2 listener has to be a function');
+
+    return folder.DescendantRemoving:Connect(createListener);
+end;
+
+function Utility.listenToTagAdded(tagName, listener)
+    for _, v in next, CollectionService:GetTagged(tagName) do
+        task.spawn(listener, v);
+    end;
+
+    return CollectionService:GetInstanceAddedSignal(tagName):Connect(listener);
+end;
+
+function Utility.getFunctionHash(f)
+    if (typeof(f) ~= 'function') then return error('getFunctionHash(f) #1 has to be a function') end;
+
+    local constants = getconstants(f);
+    local protos = getprotos(f);
+
+    local total = HttpService:JSONEncode({constants, protos});
+
+    return syn.crypt.hash(total);
+end;
+
+local function onPlayerRemoving(player)
+    playersData[player] = nil;
+end;
+
+for _, player in next, Players:GetPlayers() do
+    task.spawn(onPlayerAdded, player);
+end;
+
+Players.PlayerAdded:Connect(onPlayerAdded);
+Players.PlayerRemoving:Connect(onPlayerRemoving);
+
+function Utility.find(t, c)
+    for i, v in next, t do
+        if (c(v, i)) then
+            return v, i;
+        end;
+    end;
+
+    return nil;
+end;
+
+function Utility.map(t, c)
+    local ret = {};
+
+    for i, v in next, t do
+        local val = c(v, i);
+        if (val) then
+            table.insert(ret, val);
+        end;
+    end;
+
+    return ret;
+end;
+
+return Utility;
+end)();
+sharedRequires['14BlockUtils'] = (function()
+	local Services = sharedRequire('11Services');
+local library = sharedRequire('1library');
+local AltManagerAPI = sharedRequire('16AltManagerAPI');
+local Players, GuiService, HttpService, StarterGui, VirtualInputManager, CoreGui = Services:Get('Players', 'GuiService', 'HttpService', 'StarterGui', 'VirtualInputManager', 'CoreGui');
+local LocalPlayer = Players.LocalPlayer;
+
+local BlockUtils = {};
+local IsFriendWith = LocalPlayer.IsFriendsWith;
+
+local apiAccount;
+
+task.spawn(function()
+    apiAccount = AltManagerAPI.new(LocalPlayer.Name);
+end);
+
+local function isFriendWith(userId)
+    local suc, data = pcall(IsFriendWith, LocalPlayer, userId);
+
+    if (suc) then
+        return data;
+    end;
+
+    return true;
+end;
+
+function BlockUtils:BlockUser(userId)
+    if(library.flags.useAltManagerToBlock and apiAccount) then
+        apiAccount:BlockUser(userId);
+
+        local blockedListRetrieved, blockList = pcall(HttpService.JSONDecode, HttpService, apiAccount:GetBlockedList());
+        if(blockedListRetrieved and typeof(blockList) == 'table' and blockList.success and blockList.total >= 20) then
+            apiAccount:UnblockEveryone();
+        end;
+    else
+        library.base.Enabled = false;
+
+        local blockedUserIds = StarterGui:GetCore('GetBlockedUserIds');
+        local playerToBlock = Instance.new('Player');
+        playerToBlock.UserId = tonumber(userId);
+
+        local lastList = #blockedUserIds;
+        GuiService:ClearError();
+
+        repeat
+            StarterGui:SetCore('PromptBlockPlayer', playerToBlock);
+
+            local confirmButton = CoreGui.RobloxGui.PromptDialog.ContainerFrame:FindFirstChild('ConfirmButton');
+            if (not confirmButton) then break end;
+
+            local btnPosition = confirmButton.AbsolutePosition + Vector2.new(40, 40);
+
+            VirtualInputManager:SendMouseButtonEvent(btnPosition.X, btnPosition.Y, 0, false, game, 1);
+            task.wait();
+            VirtualInputManager:SendMouseButtonEvent(btnPosition.X, btnPosition.Y, 0, true, game, 1);
+            task.wait();
+        until #StarterGui:GetCore('GetBlockedUserIds') ~= lastList;
+
+        task.wait(0.2);
+
+        library.base.Enabled = true;
+    end;
+end;
+
+function BlockUtils:UnblockUser()
+
+end;
+
+function BlockUtils:BlockRandomUser()
+    for _, v in next, Players:GetPlayers() do
+        if (v ~= LocalPlayer and not isFriendWith(v.UserId)) then
+            self:BlockUser(v.UserId);
+            break;
+        end;
+    end;
+end;
+
+return BlockUtils;
+end)();
+
+
+sharedRequires['lolhahalibrary'] = (function()
+-- // Services
+
+local libraryLoadAt = tick();
+
+local Signal = sharedRequire('15Signal');
+local Services = sharedRequire('11Services');
+local KeyBindVisualizer = sharedRequire('17KeyBindVisualizer');
+
+local CoreGui, Players, RunService, TextService, UserInputService, ContentProvider, HttpService, TweenService, GuiService, TeleportService = Services:Get('CoreGui', 'Players', 'RunService', 'TextService', 'UserInputService', 'ContentProvider', 'HttpService', 'TweenService', 'GuiService', 'TeleportService');
+
+local toCamelCase = sharedRequire('7toCamelCase');
+local Maid = sharedRequire('13Maid');
+local ToastNotif = sharedRequire('2ToastNotif');
+
+local LocalPlayer = Players.LocalPlayer;
+local visualizer;
+
+if getgenv().library then
+	getgenv().library:Unload();
+end;
+
+if (not isfile('Aztup Hub V3/configs')) then
+    makefolder('Aztup Hub V3/configs');
+end;
+
+if (not isfile('Aztup Hub V3/configs/globalConf.bin')) then
+    -- By default global config is turned on
+    writefile('Aztup Hub V3/configs/globalConf.bin', 'true');
+end;
+
+local globalConfFilePath = 'Aztup Hub V3/configs/globalConf.bin';
+local isGlobalConfigOn = readfile(globalConfFilePath) == 'true';
+
+local library = {
+    unloadMaid = Maid.new(),
+	tabs = {},
+	draggable = true,
+	flags = {},
+	title = string.format('Aztup Hub | v%s', scriptVersion or 'DEBUG'),
+	open = false,
+	popup = nil,
+	instances = {},
+	connections = {},
+	options = {},
+	notifications = {},
+    configVars = {},
+	tabSize = 0,
+	theme = {},
+	foldername =  isGlobalConfigOn and 'Aztup Hub V3/configs/global' or string.format('Aztup Hub V3/configs/%s', tostring(LocalPlayer.UserId)),
+	fileext = getServerConstant('.json'),
+    chromaColor = Color3.new()
+}
+
+library.originalTitle = library.title;
+
+do -- // Load
+    library.unloadMaid:GiveTask(task.spawn(function()
+        while true do
+            for i = 1, 360 do
+                library.chromaColor = Color3.fromHSV(i / 360, 1, 1);
+                task.wait(0.1);
+            end;
+        end;
+    end));
+
+    -- if(debugMode) then
+        getgenv().library = library
+    -- end;
+
+    library.OnLoad = Signal.new();
+    library.OnKeyPress = Signal.new();
+    library.OnKeyRelease = Signal.new();
+
+    library.OnFlagChanged = Signal.new();
+
+    KeyBindVisualizer.init(library);
+
+    library.unloadMaid:GiveTask(library.OnLoad);
+    library.unloadMaid:GiveTask(library.OnKeyPress);
+    library.unloadMaid:GiveTask(library.OnKeyRelease);
+    library.unloadMaid:GiveTask(library.OnFlagChanged);
+
+    visualizer = KeyBindVisualizer.new();
+    local mouseMovement = Enum.UserInputType.MouseMovement;
+
+    --Locals
+    local dragging, dragInput, dragStart, startPos, dragObject
+
+    local blacklistedKeys = { --add or remove keys if you find the need to
+        Enum.KeyCode.Unknown,Enum.KeyCode.W,Enum.KeyCode.A,Enum.KeyCode.S,Enum.KeyCode.D,Enum.KeyCode.Slash,Enum.KeyCode.Tab,Enum.KeyCode.Escape
+    }
+    local whitelistedMouseinputs = { --add or remove mouse inputs if you find the need to
+        Enum.UserInputType.MouseButton1,Enum.UserInputType.MouseButton2,Enum.UserInputType.MouseButton3
+    }
+
+    local function onInputBegan(input, gpe)
+        local inputType = input.UserInputType;
+        if (inputType == mouseMovement) then return end;
+
+        if (UserInputService:GetFocusedTextBox()) then return end;
+        local inputKeyCode = input.KeyCode;
+
+        local fastInputObject = {
+            KeyCode = {
+                Name = inputKeyCode.Name,
+                Value = inputKeyCode.Value
+            },
+
+            UserInputType = {
+                Name = inputType.Name,
+                Value = inputType.Value
+            },
+
+            UserInputState = input.UserInputState,
+            realKeyCode = inputKeyCode,
+            realInputType = inputType
+        };
+
+        library.OnKeyPress:Fire(fastInputObject, gpe);
+    end;
+
+    local function onInputEnded(input)
+        local inputType = input.UserInputType;
+        if (inputType == mouseMovement) then return end;
+
+        local inputKeyCode = input.KeyCode;
+
+        local fastInputObject = {
+            KeyCode = {
+                Name = inputKeyCode.Name,
+                Value = inputKeyCode.Value
+            },
+
+            UserInputType = {
+                Name = inputType.Name,
+                Value = inputType.Value
+            },
+
+            UserInputState = input.UserInputState,
+            realKeyCode = inputKeyCode,
+            realInputType = inputType
+        };
+
+        library.OnKeyRelease:Fire(fastInputObject);
+    end;
+
+    library.unloadMaid:GiveTask(UserInputService.InputBegan:Connect(onInputBegan));
+    library.unloadMaid:GiveTask(UserInputService.InputEnded:Connect(onInputEnded));
+
+    local function makeTooltip(interest, option)
+        library.unloadMaid:GiveTask(interest.InputChanged:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                if option.tip then
+                    library.tooltip.Text = option.tip;
+                    library.tooltip.Position = UDim2.new(0, input.Position.X + 26, 0, input.Position.Y + 36);
+                end;
+            end;
+        end));
+
+        library.unloadMaid:GiveTask(interest.InputEnded:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                if option.tip then
+                    library.tooltip.Position = UDim2.fromScale(10, 10);
+                end;
+            end;
+        end));
+    end;
+
+    --Functions
+    library.round = function(num, bracket)
+        bracket = bracket or 1
+        if typeof(num) == getServerConstant('Vector2') then
+            return Vector2.new(library.round(num.X), library.round(num.Y))
+        elseif typeof(num) == getServerConstant('Color3') then
+            return library.round(num.r * 255), library.round(num.g * 255), library.round(num.b * 255)
+        else
+            return num - num % bracket;
+        end
+    end
+
+    function library:Create(class, properties)
+        properties = properties or {}
+        if not class then return end
+        local a = class == 'Square' or class == 'Line' or class == 'Text' or class == 'Quad' or class == 'Circle' or class == 'Triangle'
+        local t = a and Drawing or Instance
+        local inst = t.new(class)
+        for property, value in next, properties do
+            inst[property] = value
+        end
+        table.insert(self.instances, {object = inst, method = a})
+        return inst
+    end
+
+    function library:AddConnection(connection, name, callback)
+        callback = type(name) == 'function' and name or callback
+        connection = connection:Connect(callback)
+        self.unloadMaid:GiveTask(connection);
+        if name ~= callback then
+            self.connections[name] = connection
+        else
+            table.insert(self.connections, connection)
+        end
+        return connection
+    end
+
+    function library:Unload()
+        task.wait();
+        visualizer:Remove();
+
+        for _, o in next, self.options do
+            if o.type == 'toggle' and not string.find(string.lower(o.flag), 'panic') and o.flag ~= 'saveconfigauto' then
+                pcall(o.SetState, o, false);
+            end;
+        end;
+
+        library.unloadMaid:Destroy();
+    end
+
+    local function readFileAndDecodeIt(filePath)
+        if (not isfile(filePath)) then return; end;
+
+        local suc, fileContent = pcall(readfile, filePath);
+        if (not suc) then return; end;
+
+        local suc2, configData = pcall(HttpService.JSONDecode, HttpService, fileContent);
+        if (not suc2) then return; end;
+
+        return configData;
+    end;
+
+    local function getConfigForGame(configData)
+        local configValueName = library.gameName or 'Universal';
+
+        if (not configData[configValueName]) then
+            configData[configValueName] = {};
+        end;
+
+        return configData[configValueName];
+    end;
+
+    function library:LoadConfig(configName)
+        if (not table.find(self:GetConfigs(), configName)) then
+            return;
+        end;
+
+        local filePath = string.format('%s/%s.%s%s', self.foldername, configName, 'config', self.fileext);
+        local configData = readFileAndDecodeIt(filePath);
+        if (not configData) then print('no config', configName); return; end;
+        configData = getConfigForGame(configData);
+
+        -- Set the loaded config to the new config so we save it only when its actually loaded
+        library.loadedConfig = configName;
+        library.options.configList:SetValue(configName);
+
+        for _, option in next, self.options do
+            if (not option.hasInit or option.type == 'button' or not option.flag or option.skipflag) then
+                continue;
+            end;
+
+            local configDataVal = configData[option.flag];
+
+            if (typeof(configDataVal) == 'nil') then
+                continue;
+            end;
+
+            if (option.type == 'toggle') then
+                task.spawn(option.SetState, option, configDataVal == 1);
+            elseif (option.type == 'color') then
+                task.spawn(option.SetColor, option, Color3.fromHex(configDataVal));
+
+                if option.trans then
+                    task.spawn(option.SetTrans, option, configData[option.flag .. 'Transparency']);
+                end;
+            elseif (option.type == 'bind') then
+                task.spawn(option.SetKeys, option, configDataVal);
+            else
+                task.spawn(option.SetValue, option, configDataVal);
+            end;
+        end;
+
+        return true;
+    end;
+
+    function library:SaveConfig(configName)
+        local filePath = string.format('%s/%s.%s%s', self.foldername, configName, 'config', self.fileext);
+        local allConfigData = readFileAndDecodeIt(filePath) or {};
+
+        if (allConfigData.configVersion ~= '1') then
+            allConfigData = {};
+            allConfigData.configVersion = '1';
+        end;
+
+        local configData = getConfigForGame(allConfigData);
+
+        debug.profilebegin('Set config value');
+        for _, option in next, self.options do
+            if (option.type == 'button' or not option.flag) then continue end;
+            if (option.skipflag or option.noSave) then continue end;
+
+            local flag = option.flag;
+
+            if (option.type == 'toggle') then
+                configData[flag] = option.state and 1 or 0;
+            elseif (option.type == 'color') then
+                configData[flag] = option.color:ToHex();
+                if (not option.trans) then continue end;
+                configData[flag .. 'Transparency'] = option.trans;
+            elseif (option.type == 'bind' and option.key ~= 'none') then
+                local toSave = {};
+                for _, v in next, option.keys do
+                    table.insert(toSave, v.Name);
+                end;
+
+                configData[flag] = toSave;
+            elseif (option.type == 'list') then
+                configData[flag] = option.value;
+            elseif (option.type == 'box' and option.value ~= 'nil' and option.value ~= '') then
+                configData[flag] = option.value;
+            else
+                configData[flag] = option.value;
+            end;
+        end;
+        debug.profileend();
+
+        local configVars = library.configVars;
+        configVars.config = configName;
+
+        debug.profilebegin('writefile');
+        writefile(self.foldername .. '/' .. self.fileext, HttpService:JSONEncode(configVars));
+        debug.profileend();
+
+        debug.profilebegin('writefile');
+        writefile(filePath, HttpService:JSONEncode(allConfigData));
+        debug.profileend();
+    end
+
+    function library:GetConfigs()
+        if not isfolder(self.foldername) then
+            makefolder(self.foldername)
+        end
+
+        local configFiles = {};
+
+        for i, v in next, listfiles(self.foldername) do
+            local fileName = v:match('\\(.+)');
+            local fileSubExtension = v:match('%.(.+)%.json');
+
+            if (fileSubExtension == 'config') then
+                table.insert(configFiles, fileName:match('(.-)%.config'));
+            end;
+        end;
+
+        if (not table.find(configFiles, 'default')) then
+            table.insert(configFiles, 'default');
+        end;
+
+        return configFiles;
+    end
+
+    function library:UpdateConfig()
+        if (not library.hasInit) then return end;
+        debug.profilebegin('Config Save');
+
+        library:SaveConfig(library.loadedConfig or 'default');
+
+        debug.profileend();
+    end;
+
+    local function createLabel(option, parent)
+        option.main = library:Create('TextLabel', {
+            LayoutOrder = option.position,
+            Position = UDim2.new(0, 6, 0, 0),
+            Size = UDim2.new(1, -12, 0, 24),
+            BackgroundTransparency = 1,
+            TextSize = 15,
+            Font = Enum.Font.Code,
+            TextColor3 = Color3.new(1, 1, 1),
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top,
+            TextWrapped = true,
+            RichText = true,
+            Parent = parent
+        })
+
+        setmetatable(option, {__newindex = function(t, i, v)
+            if i == 'Text' then
+                option.main.Text = tostring(v)
+
+                local textSize = TextService:GetTextSize(option.main.ContentText, 15, Enum.Font.Code, Vector2.new(option.main.AbsoluteSize.X, 9e9));
+                option.main.Size = UDim2.new(1, -12, 0, textSize.Y);
+            end
+        end})
+
+        option.Text = option.text
+    end
+
+    local function createDivider(option, parent)
+        option.main = library:Create('Frame', {
+            LayoutOrder = option.position,
+            Size = UDim2.new(1, 0, 0, 18),
+            BackgroundTransparency = 1,
+            Parent = parent
+        })
+
+        library:Create('Frame', {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(1, -24, 0, 1),
+            BackgroundColor3 = Color3.fromRGB(60, 60, 60),
+            BorderColor3 = Color3.new(),
+            Parent = option.main
+        })
+
+        option.title = library:Create('TextLabel', {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+            BorderSizePixel = 0,
+            TextColor3 =  Color3.new(1, 1, 1),
+            TextSize = 15,
+            Font = Enum.Font.Code,
+            TextXAlignment = Enum.TextXAlignment.Center,
+            Parent = option.main
+        })
+
+        local interest = option.main;
+        makeTooltip(interest, option);
+
+        setmetatable(option, {__newindex = function(t, i, v)
+            if i == 'Text' then
+                if v then
+                    option.title.Text = tostring(v)
+                    option.title.Size = UDim2.new(0, TextService:GetTextSize(option.title.Text, 15, Enum.Font.Code, Vector2.new(9e9, 9e9)).X + 12, 0, 20)
+                    option.main.Size = UDim2.new(1, 0, 0, 18)
+                else
+                    option.title.Text = ''
+                    option.title.Size = UDim2.new()
+                    option.main.Size = UDim2.new(1, 0, 0, 6)
+                end
+            end
+        end})
+        option.Text = option.text
+    end
+
+    local function createToggle(option, parent)
+        option.hasInit = true
+        option.onStateChanged = Signal.new();
+
+        option.main = library:Create('Frame', {
+            LayoutOrder = option.position,
+            Size = UDim2.new(1, 0, 0, 0),
+            BackgroundTransparency = 1,
+            AutomaticSize = Enum.AutomaticSize.Y,
+            Parent = parent
+        })
+
+        local tickbox
+        local tickboxOverlay
+        if option.style then
+            tickbox = library:Create('ImageLabel', {
+                Position = UDim2.new(0, 6, 0, 4),
+                Size = UDim2.new(0, 12, 0, 12),
+                BackgroundTransparency = 1,
+                Image = 'rbxassetid://3570695787',
+                ImageColor3 = Color3.new(),
+                Parent = option.main
+            })
+
+            library:Create('ImageLabel', {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -2, 1, -2),
+                BackgroundTransparency = 1,
+                Image = 'rbxassetid://3570695787',
+                ImageColor3 = Color3.fromRGB(60, 60, 60),
+                Parent = tickbox
+            })
+
+            library:Create('ImageLabel', {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -6, 1, -6),
+                BackgroundTransparency = 1,
+                Image = 'rbxassetid://3570695787',
+                ImageColor3 = Color3.fromRGB(40, 40, 40),
+                Parent = tickbox
+            })
+
+            tickboxOverlay = library:Create('ImageLabel', {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, -6, 1, -6),
+                BackgroundTransparency = 1,
+                Image = 'rbxassetid://3570695787',
+                ImageColor3 = library.flags.menuAccentColor,
+                Visible = option.state,
+                Parent = tickbox
+            })
+
+            library:Create('ImageLabel', {
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new(0.5, 0, 0.5, 0),
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                Image = 'rbxassetid://5941353943',
+                ImageTransparency = 0.6,
+                Parent = tickbox
+            })
+
+            table.insert(library.theme, tickboxOverlay)
+        else
+            tickbox = library:Create('Frame', {
+                Position = UDim2.new(0, 6, 0, 4),
+                Size = UDim2.new(0, 12, 0, 12),
+                BackgroundColor3 = library.flags.menuAccentColor,
+                BorderColor3 = Color3.new(),
+                Parent = option.main
+            })
+
+            tickboxOverlay = library:Create('ImageLabel', {
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = option.state and 1 or 0,
+                BackgroundColor3 = Color3.fromRGB(50, 50, 50),
+                BorderColor3 = Color3.new(),
+                Image = 'rbxassetid://4155801252',
+                ImageTransparency = 0.6,
+                ImageColor3 = Color3.new(),
+                Parent = tickbox
+            })
+
+            library:Create('ImageLabel', {
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                Image = 'rbxassetid://2592362371',
+                ImageColor3 = Color3.fromRGB(60, 60, 60),
+                ScaleType = Enum.ScaleType.Slice,
+                SliceCenter = Rect.new(2, 2, 62, 62),
+                Parent = tickbox
+            })
+
+            library:Create('ImageLabel', {
+                Size = UDim2.new(1, -2, 1, -2),
+                Position = UDim2.new(0, 1, 0, 1),
+                BackgroundTransparency = 1,
+                Image = 'rbxassetid://2592362371',
+                ImageColor3 = Color3.new(),
+                ScaleType = Enum.ScaleType.Slice,
+                SliceCenter = Rect.new(2, 2, 62, 62),
+                Parent = tickbox
+            })
+
+            table.insert(library.theme, tickbox)
+        end
+
+        option.interest = library:Create('Frame', {
+            Position = UDim2.new(0, 0, 0, 0),
+            Size = UDim2.new(1, 0, 0, 20),
+            BackgroundTransparency = 1,
+            Parent = option.main
+        })
+
+        option.title = library:Create('TextLabel', {
+            Position = UDim2.new(0, 24, 0, 0),
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Text = option.text,
+            TextColor3 =  option.state and Color3.fromRGB(210, 210, 210) or Color3.fromRGB(180, 180, 180),
+            TextSize = 15,
+            Font = Enum.Font.Code,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = option.interest
+        })
+
+        library.unloadMaid:GiveTask(option.interest.InputBegan:connect(function(input)
+            if input.UserInputType.Name == 'MouseButton1' then
+                option:SetState(not option.state)
+            end
+            if input.UserInputType.Name == 'MouseMovement' then
+                if not library.warning and not library.slider then
+                    if option.style then
+                        tickbox.ImageColor3 = library.flags.menuAccentColor
+                    else
+                        tickbox.BorderColor3 = library.flags.menuAccentColor
+                        tickboxOverlay.BorderColor3 = library.flags.menuAccentColor
+                    end
+                end
+                if option.tip then
+                    library.tooltip.Text = option.tip;
+                end
+            end
+        end))
+
+        makeTooltip(option.interest, option);
+
+        library.unloadMaid:GiveTask(option.interest.InputEnded:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                if option.style then
+                    tickbox.ImageColor3 = Color3.new()
+                else
+                    tickbox.BorderColor3 = Color3.new()
+                    tickboxOverlay.BorderColor3 = Color3.new()
+                end
+            end
+        end));
+
+        function option:SetState(state, nocallback)
+            state = typeof(state) == 'boolean' and state
+            state = state or false
+            library.flags[self.flag] = state
+            self.state = state
+            option.title.TextColor3 = state and Color3.fromRGB(210, 210, 210) or Color3.fromRGB(160, 160, 160)
+            if option.style then
+                tickboxOverlay.Visible = state
+            else
+                tickboxOverlay.BackgroundTransparency = state and 1 or 0
+            end
+
+            if not nocallback then
+                task.spawn(self.callback, state);
+            end
+
+            option.onStateChanged:Fire(state);
+            library.OnFlagChanged:Fire(self);
+        end
+
+        task.defer(function()
+            option:SetState(option.state);
+        end);
+
+        setmetatable(option, {__newindex = function(t, i, v)
+            if i == 'Text' then
+                option.title.Text = tostring(v)
+            else
+                rawset(t, i, v);
+            end
+        end})
+    end
+
+    local function createButton(option, parent)
+        option.hasInit = true
+
+        option.main = option.sub and option:getMain() or library:Create('Frame', {
+            LayoutOrder = option.position,
+            Size = UDim2.new(1, 0, 0, 26),
+            BackgroundTransparency = 1,
+            Parent = parent
+        })
+
+        option.title = library:Create('TextLabel', {
+            AnchorPoint = Vector2.new(0.5, 1),
+            Position = UDim2.new(0.5, 0, 1, -5),
+            Size = UDim2.new(1, -12, 0, 18),
+            BackgroundColor3 = Color3.fromRGB(50, 50, 50),
+            BorderColor3 = Color3.new(),
+            Text = option.text,
+            TextColor3 = Color3.new(1, 1, 1),
+            TextSize = 15,
+            Font = Enum.Font.Code,
+            Parent = option.main
+        })
+
+        if (option.sub) then
+            if (not option.parent.subInit) then
+                option.parent.subInit = true;
+
+                -- If we are a sub option then set some properties of parent
+
+                option.parent.title.Size = UDim2.fromOffset(0, 18);
+
+                option.parent.listLayout = library:Create('UIGridLayout', {
+                    Parent = option.parent.main,
+                    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                    FillDirection = Enum.FillDirection.Vertical,
+                    VerticalAlignment = Enum.VerticalAlignment.Center,
+                    CellSize = UDim2.new(1 / (#option.main:GetChildren()-1), -8, 0, 18)
+                });
+            end;
+
+            option.parent.listLayout.CellSize = UDim2.new(1 / (#option.parent.main:GetChildren()-1), -8, 0, 18);
+        end;
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.fromRGB(60, 60, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.title
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, -2, 1, -2),
+            Position = UDim2.new(0, 1, 0, 1),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.title
+        })
+
+        library:Create('UIGradient', {
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(180, 180, 180)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(253, 253, 253)),
+            }),
+            Rotation = -90,
+            Parent = option.title
+        })
+
+        library.unloadMaid:GiveTask(option.title.InputBegan:connect(function(input)
+            if input.UserInputType.Name == 'MouseButton1' then
+                option.callback()
+                if library then
+                    library.flags[option.flag] = true
+                end
+                if option.tip then
+                    library.tooltip.Text = option.tip;
+                end
+            end
+            if input.UserInputType.Name == 'MouseMovement' then
+                if not library.warning and not library.slider then
+                    option.title.BorderColor3 = library.flags.menuAccentColor;
+                end
+                if option.tip then
+                    library.tooltip.Text = option.tip;
+                end
+            end
+        end));
+
+        makeTooltip(option.title, option);
+
+        library.unloadMaid:GiveTask(option.title.InputEnded:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                option.title.BorderColor3 = Color3.new();
+            end
+        end));
+    end
+
+    local function createBind(option, parent)
+        option.hasInit = true
+
+        local Loop
+        local maid = Maid.new()
+
+        library.unloadMaid:GiveTask(function()
+            maid:Destroy();
+        end);
+
+        if option.sub then
+            option.main = option:getMain()
+        else
+            option.main = option.main or library:Create('Frame', {
+                LayoutOrder = option.position,
+                Size = UDim2.new(1, 0, 0, 20),
+                BackgroundTransparency = 1,
+                Parent = parent
+            })
+
+            option.title = library:Create('TextLabel', {
+                Position = UDim2.new(0, 6, 0, 0),
+                Size = UDim2.new(1, -12, 1, 0),
+                BackgroundTransparency = 1,
+                Text = option.text,
+                TextSize = 15,
+                Font = Enum.Font.Code,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = option.main
+            })
+        end
+
+        local bindinput = library:Create(option.sub and 'TextButton' or 'TextLabel', {
+            Position = UDim2.new(1, -6 - (option.subpos or 0), 0, option.sub and 2 or 3),
+            SizeConstraint = Enum.SizeConstraint.RelativeYY,
+            BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+            BorderSizePixel = 0,
+            TextSize = 15,
+            Font = Enum.Font.Code,
+            TextColor3 = Color3.fromRGB(160, 160, 160),
+            TextXAlignment = Enum.TextXAlignment.Right,
+            Parent = option.main
+        })
+
+        if option.sub then
+            bindinput.AutoButtonColor = false
+        end
+
+        local interest = option.sub and bindinput or option.main;
+        local maid = Maid.new();
+
+        local function formatKey(key)
+            if (key:match('Mouse')) then
+                key = key:gsub('Button', ''):gsub('Mouse', 'M');
+            elseif (key:match('Shift') or key:match('Alt') or key:match('Control')) then
+                key = key:gsub('Left', 'L'):gsub('Right', 'R');
+            end;
+
+            return key:gsub('Control', 'CTRL'):upper();
+        end;
+
+        local function formatKeys(keys)
+            if (not keys) then return {}; end;
+            local ret = {};
+
+            for _, key in next, keys do
+                table.insert(ret, formatKey(typeof(key) == 'string' and key or key.Name));
+            end;
+
+            return ret;
+        end;
+
+        local busy = false;
+
+        makeTooltip(interest, option);
+
+        library.unloadMaid:GiveTask(interest.InputEnded:connect(function(input)
+            if input.UserInputType.Name == 'MouseButton1' and not busy then
+                busy = true;
+                library.disableKeyBind = true;
+
+                bindinput.Text = '[...]'
+                bindinput.Size = UDim2.new(0, -TextService:GetTextSize(bindinput.Text, 16, Enum.Font.Code, Vector2.new(9e9, 9e9)).X, 0, 16)
+                bindinput.TextColor3 = library.flags.menuAccentColor
+
+                local displayKeys = {};
+                local keys = {};
+
+                maid.keybindLoop = RunService.Heartbeat:Connect(function()
+                    for _, key in next, UserInputService:GetKeysPressed() do
+                        local value = formatKey(key.KeyCode.Name);
+
+                        if (value == 'BACKSPACE') then
+                            maid.keybindLoop = nil;
+                            option:SetKeys('none');
+                            return;
+                        end;
+
+                        if (table.find(displayKeys, value)) then continue; end;
+                        table.insert(displayKeys, value);
+                        table.insert(keys, key.KeyCode);
+                    end;
+
+                    for _, mouseBtn in next, UserInputService:GetMouseButtonsPressed() do
+                        local value = formatKey(mouseBtn.UserInputType.Name);
+
+                        if (option.nomouse) then continue end;
+                        if (not table.find(whitelistedMouseinputs, mouseBtn.UserInputType)) then continue end;
+
+                        if (table.find(displayKeys, value)) then continue; end;
+
+                        table.insert(displayKeys, value);
+                        table.insert(keys, mouseBtn.UserInputType);
+                    end;
+
+                    bindinput.Text = '[' .. table.concat(displayKeys, '+') .. ']';
+
+                    if (#displayKeys == 3) then
+                        maid.keybindLoop = nil;
+                    end;
+                end);
+
+                task.wait(0.05);
+                maid.onInputEnded = UserInputService.InputEnded:Connect(function(input)
+                    if(input.UserInputType ~= Enum.UserInputType.Keyboard and not input.UserInputType.Name:find('MouseButton')) then return; end;
+
+                    maid.keybindLoop = nil;
+                    maid.onInputEnded = nil;
+
+                    option:SetKeys(keys);
+                    library.disableKeyBind = false;
+                    task.wait(0.2);
+                    busy = false;
+                end);
+            end
+        end));
+
+        local function isKeybindPressed()
+            local foundCount = 0;
+
+            for _, key in next, UserInputService:GetKeysPressed() do
+                if (table.find(option.keys, key.KeyCode)) then
+                    foundCount += 1;
+                end;
+            end;
+
+            for _, key in next, UserInputService:GetMouseButtonsPressed() do
+                if (table.find(option.keys, key.UserInputType)) then
+                    foundCount += 1;
+                end;
+            end;
+
+            return foundCount == #option.keys;
+        end;
+
+        local debounce = false;
+
+        function option:SetKeys(keys)
+            if (typeof(keys) == 'string') then
+                keys = {keys};
+            end;
+
+            keys = keys or {option.key ~= 'none' and option.key or nil};
+
+            for i, key in next, keys do
+                if (typeof(key) == 'string' and key ~= 'none') then
+                    local isMouse = key:find('MouseButton');
+
+                    if (isMouse) then
+                        keys[i] = Enum.UserInputType[key];
+                    else
+                        keys[i] = Enum.KeyCode[key];
+                    end;
+                end;
+            end;
+
+            bindinput.TextColor3 = Color3.fromRGB(160, 160, 160)
+
+            if Loop then
+                Loop:Disconnect()
+                Loop = nil;
+                library.flags[option.flag] = false
+                option.callback(true, 0)
+            end
+
+            self.keys = keys;
+
+            if self.keys[1] == 'Backspace' or #self.keys == 0 then
+                self.key = 'none'
+                bindinput.Text = '[NONE]'
+
+                if (#self.keys ~= 0) then
+                    visualizer:RemoveText(self.text);
+                end;
+            else
+                if (self.parentFlag and self.key ~= 'none') then
+                    if (library.flags[self.parentFlag]) then
+                        visualizer:AddText(self.text);
+                    end;
+                end;
+
+                local formattedKey = formatKeys(self.keys);
+                bindinput.Text = '[' .. table.concat(formattedKey, '+') .. ']';
+                self.key = table.concat(formattedKey, '+');
+            end
+
+            bindinput.Size = UDim2.new(0, -TextService:GetTextSize(bindinput.Text, 16, Enum.Font.Code, Vector2.new(9e9, 9e9)).X, 0, 16)
+
+            if (self.key == 'none') then
+                maid.onKeyPress = nil;
+                maid.onKeyRelease = nil;
+            else
+                maid.onKeyPress = library.OnKeyPress:Connect(function()
+                    if (library.disableKeyBind or #option.keys == 0 or debounce) then return end;
+                    if (not isKeybindPressed()) then return; end;
+
+                    debounce = true;
+
+                    if option.mode == 'toggle' then
+                        library.flags[option.flag] = not library.flags[option.flag]
+                        option.callback(library.flags[option.flag], 0)
+                    else
+                        library.flags[option.flag] = true
+
+                        if Loop then
+                            Loop:Disconnect();
+                            Loop = nil;
+                            option.callback(true, 0);
+                        end;
+
+                        Loop = library:AddConnection(RunService.Heartbeat, function(step)
+                            if not UserInputService:GetFocusedTextBox() then
+                                option.callback(nil, step)
+                            end
+                        end)
+                    end
+                end);
+
+                maid.onKeyRelease = library.OnKeyRelease:Connect(function()
+                    if (debounce and not isKeybindPressed()) then debounce = false; end;
+                    if (option.mode ~= 'hold') then return; end;
+
+                    local bindKey = option.key;
+                    if (bindKey == 'none') then return end;
+
+                    if not isKeybindPressed() then
+                        if Loop then
+                            Loop:Disconnect()
+                            Loop = nil;
+
+                            library.flags[option.flag] = false
+                            option.callback(true, 0)
+                        end
+                    end
+                end);
+            end;
+        end;
+
+        option:SetKeys();
+    end
+
+    local function createSlider(option, parent)
+        option.hasInit = true
+
+        if option.sub then
+            option.main = option:getMain()
+        else
+            option.main = library:Create('Frame', {
+                LayoutOrder = option.position,
+                Size = UDim2.new(1, 0, 0, option.textpos and 24 or 40),
+                BackgroundTransparency = 1,
+                Parent = parent
+            })
+        end
+
+        option.slider = library:Create('Frame', {
+            Position = UDim2.new(0, 6, 0, (option.sub and 22 or option.textpos and 4 or 20)),
+            Size = UDim2.new(1, -12, 0, 16),
+            BackgroundColor3 = Color3.fromRGB(50, 50, 50),
+            BorderColor3 = Color3.new(),
+            Parent = option.main
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2454009026',
+            ImageColor3 = Color3.new(),
+            ImageTransparency = 0.8,
+            Parent = option.slider
+        })
+
+        option.fill = library:Create('Frame', {
+            BackgroundColor3 = library.flags.menuAccentColor,
+            BorderSizePixel = 0,
+            Parent = option.slider
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.fromRGB(60, 60, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.slider
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, -2, 1, -2),
+            Position = UDim2.new(0, 1, 0, 1),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.slider
+        })
+
+        option.title = library:Create('TextBox', {
+            Position = UDim2.new((option.sub or option.textpos) and 0.5 or 0, (option.sub or option.textpos) and 0 or 6, 0, 0),
+            Size = UDim2.new(0, 0, 0, (option.sub or option.textpos) and 14 or 18),
+            BackgroundTransparency = 1,
+            Text = (option.text == 'nil' and '' or option.text .. ': ') .. option.value .. option.suffix,
+            TextSize = (option.sub or option.textpos) and 14 or 15,
+            Font = Enum.Font.Code,
+            TextColor3 = Color3.fromRGB(210, 210, 210),
+            TextXAlignment = Enum.TextXAlignment[(option.sub or option.textpos) and 'Center' or 'Left'],
+            Parent = (option.sub or option.textpos) and option.slider or option.main
+        })
+        table.insert(library.theme, option.fill)
+
+        library:Create('UIGradient', {
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(115, 115, 115)),
+                ColorSequenceKeypoint.new(1, Color3.new(1, 1, 1)),
+            }),
+            Rotation = -90,
+            Parent = option.fill
+        })
+
+        if option.min >= 0 then
+            option.fill.Size = UDim2.new((option.value - option.min) / (option.max - option.min), 0, 1, 0)
+        else
+            option.fill.Position = UDim2.new((0 - option.min) / (option.max - option.min), 0, 0, 0)
+            option.fill.Size = UDim2.new(option.value / (option.max - option.min), 0, 1, 0)
+        end
+
+        local manualInput
+        library.unloadMaid:GiveTask(option.title.Focused:connect(function()
+            if not manualInput then
+                option.title:ReleaseFocus()
+                option.title.Text = (option.text == 'nil' and '' or option.text .. ': ') .. option.value .. option.suffix
+            end
+        end));
+
+        library.unloadMaid:GiveTask(option.title.FocusLost:connect(function()
+            option.slider.BorderColor3 = Color3.new()
+            if manualInput then
+                if tonumber(option.title.Text) then
+                    option:SetValue(tonumber(option.title.Text))
+                else
+                    option.title.Text = (option.text == 'nil' and '' or option.text .. ': ') .. option.value .. option.suffix
+                end
+            end
+            manualInput = false
+        end));
+
+        local interest = (option.sub or option.textpos) and option.slider or option.main
+        library.unloadMaid:GiveTask(interest.InputBegan:connect(function(input)
+            if input.UserInputType.Name == 'MouseButton1' then
+                if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) or UserInputService:IsKeyDown(Enum.KeyCode.RightControl) then
+                    manualInput = true
+                    option.title:CaptureFocus()
+                else
+                    library.slider = option
+                    option.slider.BorderColor3 = library.flags.menuAccentColor
+                    option:SetValue(option.min + ((input.Position.X - option.slider.AbsolutePosition.X) / option.slider.AbsoluteSize.X) * (option.max - option.min))
+                end
+            end
+            if input.UserInputType.Name == 'MouseMovement' then
+                if not library.warning and not library.slider then
+                    option.slider.BorderColor3 = library.flags.menuAccentColor
+                end
+                if option.tip then
+                    library.tooltip.Text = option.tip;
+                end
+            end
+        end));
+
+        makeTooltip(interest, option);
+
+        library.unloadMaid:GiveTask(interest.InputEnded:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                if option ~= library.slider then
+                    option.slider.BorderColor3 = Color3.new();
+                end;
+            end;
+        end));
+
+        if (option.parent) then
+            local oldParent = option.slider.Parent;
+
+            option.parent.onStateChanged:Connect(function(state)
+                option.slider.Parent = state and oldParent or nil;
+            end);
+        end;
+
+        local tweenInfo = TweenInfo.new(0.05, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+
+        function option:SetValue(value, nocallback)
+            value = value or self.value;
+
+            value = library.round(value, option.float)
+            value = math.clamp(value, self.min, self.max)
+
+            if self.min >= 0 then
+                TweenService:Create(option.fill, tweenInfo, {Size = UDim2.new((value - self.min) / (self.max - self.min), 0, 1, 0)}):Play();
+            else
+                TweenService:Create(option.fill, tweenInfo, {
+                    Size = UDim2.new(value / (self.max - self.min), 0, 1, 0),
+                    Position = UDim2.new((0 - self.min) / (self.max - self.min), 0, 0, 0)
+                }):Play();
+            end
+            library.flags[self.flag] = value
+            self.value = value
+            option.title.Text = (option.text == 'nil' and '' or option.text .. ': ') .. string.format(option.float == 1 and '%d' or '%.02f', option.value) .. option.suffix
+            if not nocallback then
+                task.spawn(self.callback, value)
+            end
+
+            library.OnFlagChanged:Fire(self)
+        end
+
+        task.defer(function()
+            if library then
+                option:SetValue(option.value)
+            end
+        end)
+    end
+
+    local function createList(option, parent)
+        option.hasInit = true
+
+        if option.sub then
+            option.main = option:getMain()
+            option.main.Size = UDim2.new(1, 0, 0, 48)
+        else
+            option.main = library:Create('Frame', {
+                LayoutOrder = option.position,
+                Size = UDim2.new(1, 0, 0, option.text == 'nil' and 30 or 48),
+                BackgroundTransparency = 1,
+                Parent = parent
+            })
+
+            if option.text ~= 'nil' then
+                library:Create('TextLabel', {
+                    Position = UDim2.new(0, 6, 0, 0),
+                    Size = UDim2.new(1, -12, 0, 18),
+                    BackgroundTransparency = 1,
+                    Text = option.text,
+                    TextSize = 15,
+                    Font = Enum.Font.Code,
+                    TextColor3 = Color3.fromRGB(210, 210, 210),
+                    TextXAlignment = Enum.TextXAlignment.Left,
+                    Parent = option.main
+                })
+            end
+        end
+
+        if(option.playerOnly) then
+            library.OnLoad:Connect(function()
+                option.values = {};
+
+                for i,v in next, Players:GetPlayers() do
+                    if (v == LocalPlayer) then continue end;
+                    option:AddValue(v.Name);
+                end;
+
+                library.unloadMaid:GiveTask(Players.PlayerAdded:Connect(function(plr)
+                    option:AddValue(plr.Name);
+                end));
+
+                library.unloadMaid:GiveTask(Players.PlayerRemoving:Connect(function(plr)
+                    option:RemoveValue(plr.Name);
+                end));
+            end);
+        end;
+
+        local function getMultiText()
+            local t = {};
+
+            if (option.playerOnly and option.multiselect) then
+                for i, v in next, option.values do
+                    if (option.value[i]) then
+                        table.insert(t, tostring(i));
+                    end;
+                end;
+            else
+                for i, v in next, option.values do
+                    if (option.value[v]) then
+                        table.insert(t, tostring(v));
+                    end;
+                end;
+            end;
+
+            return table.concat(t, ', ');
+        end
+
+        option.listvalue = library:Create('TextBox', {
+            Position = UDim2.new(0, 6, 0, (option.text == 'nil' and not option.sub) and 4 or 22),
+            Size = UDim2.new(1, -12, 0, 22),
+            BackgroundColor3 = Color3.fromRGB(50, 50, 50),
+            BorderColor3 = Color3.new(),
+            Active = false,
+            ClearTextOnFocus = false,
+            Text = ' ' .. (typeof(option.value) == 'string' and option.value or getMultiText()),
+            TextSize = 15,
+            Font = Enum.Font.Code,
+            TextColor3 = Color3.new(1, 1, 1),
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            Parent = option.main
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2454009026',
+            ImageColor3 = Color3.new(),
+            ImageTransparency = 0.8,
+            Parent = option.listvalue
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.fromRGB(60, 60, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.listvalue
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, -2, 1, -2),
+            Position = UDim2.new(0, 1, 0, 1),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.listvalue
+        })
+
+        option.arrow = library:Create('ImageLabel', {
+            Position = UDim2.new(1, -16, 0, 7),
+            Size = UDim2.new(0, 8, 0, 8),
+            Rotation = 90,
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://4918373417',
+            ImageColor3 = Color3.new(1, 1, 1),
+            ScaleType = Enum.ScaleType.Fit,
+            ImageTransparency = 0.4,
+            Parent = option.listvalue
+        })
+
+        option.holder = library:Create('TextButton', {
+            ZIndex = 4,
+            BackgroundColor3 = Color3.fromRGB(40, 40, 40),
+            BorderColor3 = Color3.new(),
+            Text = '',
+            TextColor3 = Color3.fromRGB(255,255, 255),
+            AutoButtonColor = false,
+            Visible = false,
+            Parent = library.base
+        })
+
+        option.content = library:Create('ScrollingFrame', {
+            ZIndex = 4,
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100),
+            ScrollBarThickness = 6,
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+            VerticalScrollBarInset = Enum.ScrollBarInset.Always,
+            TopImage = 'rbxasset://textures/ui/Scroll/scroll-middle.png',
+            BottomImage = 'rbxasset://textures/ui/Scroll/scroll-middle.png',
+            Parent = option.holder
+        })
+
+        library:Create('ImageLabel', {
+            ZIndex = 4,
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.fromRGB(60, 60, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.holder
+        })
+
+        library:Create('ImageLabel', {
+            ZIndex = 4,
+            Size = UDim2.new(1, -2, 1, -2),
+            Position = UDim2.new(0, 1, 0, 1),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.holder
+        })
+
+        local layout = library:Create('UIListLayout', {
+            Padding = UDim.new(0, 2),
+            Parent = option.content
+        })
+
+        library:Create('UIPadding', {
+            PaddingTop = UDim.new(0, 4),
+            PaddingLeft = UDim.new(0, 4),
+            Parent = option.content
+        })
+
+        local valueCount = 0;
+
+        local function updateHolder(newValueCount)
+            option.holder.Size = UDim2.new(0, option.listvalue.AbsoluteSize.X, 0, 8 + ((newValueCount or valueCount) > option.max and (-2 + (option.max * 22)) or layout.AbsoluteContentSize.Y))
+            option.content.CanvasSize = UDim2.new(0, 0, 0, 8 + layout.AbsoluteContentSize.Y)
+        end;
+
+        library.unloadMaid:GiveTask(layout.Changed:Connect(function() updateHolder(); end));
+        local interest = option.sub and option.listvalue or option.main
+        local focused = false;
+
+        library.unloadMaid:GiveTask(option.listvalue.Focused:Connect(function() focused = true; end));
+        library.unloadMaid:GiveTask(option.listvalue.FocusLost:Connect(function() focused = false; end));
+
+        library.unloadMaid:GiveTask(option.listvalue:GetPropertyChangedSignal('Text'):Connect(function()
+            if (not focused) then return end;
+            local newText = option.listvalue.Text;
+
+            if (newText:sub(1, 1) ~= ' ') then
+                newText = ' ' .. newText;
+                option.listvalue.Text = newText;
+                option.listvalue.CursorPosition = 2;
+            end;
+
+            local search = string.lower(newText:sub(2));
+            local matchedResults = 0;
+
+            for name, label in next, option.labels do
+                if (string.find(string.lower(name), search)) then
+                    matchedResults += 1;
+                    label.Visible = true;
+                else
+                    label.Visible = false;
+                end;
+            end;
+
+            updateHolder(matchedResults);
+        end));
+
+        library.unloadMaid:GiveTask(option.listvalue.InputBegan:connect(function(input)
+            if input.UserInputType.Name == 'MouseButton1' then
+                if library.popup == option then library.popup:Close() return end
+                if library.popup then
+                    library.popup:Close()
+                end
+                option.arrow.Rotation = -90
+                option.open = true
+                option.holder.Visible = true
+                local pos = option.main.AbsolutePosition
+                option.holder.Position = UDim2.new(0, pos.X + 6, 0, pos.Y + ((option.text == 'nil' and not option.sub) and 66 or 84))
+                library.popup = option
+                option.listvalue.BorderColor3 = library.flags.menuAccentColor
+                option.listvalue:CaptureFocus();
+                option.listvalue.CursorPosition = string.len(typeof(option.value) == 'string' and option.value or getMultiText() or option.value) + 2;
+
+                if (option.multiselect) then
+                    option.listvalue.Text = ' ';
+                end;
+            end
+            if input.UserInputType.Name == 'MouseMovement' then
+                if not library.warning and not library.slider then
+                    option.listvalue.BorderColor3 = library.flags.menuAccentColor
+                end
+            end
+        end));
+
+        library.unloadMaid:GiveTask(option.listvalue.InputEnded:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                if not option.open then
+                    option.listvalue.BorderColor3 = Color3.new()
+                end
+            end
+        end));
+
+        library.unloadMaid:GiveTask(interest.InputBegan:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                if option.tip then
+                    library.tooltip.Text = option.tip;
+                end
+            end
+        end));
+
+        makeTooltip(interest, option);
+
+        function option:AddValue(value, state)
+            if self.labels[value] then return end
+            state = state or (option.playerOnly and false)
+
+            valueCount = valueCount + 1
+
+            if self.multiselect then
+                self.values[value] = state
+            else
+                if not table.find(self.values, value) then
+                    table.insert(self.values, value)
+                end
+            end
+
+            local label = library:Create('TextLabel', {
+                ZIndex = 4,
+                Size = UDim2.new(1, 0, 0, 20),
+                BackgroundTransparency = 1,
+                Text = value,
+                TextSize = 15,
+                Font = Enum.Font.Code,
+                TextTransparency = self.multiselect and (self.value[value] and 1 or 0) or self.value == value and 1 or 0,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = option.content
+            })
+
+            self.labels[value] = label
+
+            local labelOverlay = library:Create('TextLabel', {
+                ZIndex = 4,
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 0.8,
+                Text = ' ' ..value,
+                TextSize = 15,
+                Font = Enum.Font.Code,
+                TextColor3 = library.flags.menuAccentColor,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Visible = self.multiselect and self.value[value] or self.value == value,
+                Parent = label
+            });
+
+            table.insert(library.theme, labelOverlay)
+
+            library.unloadMaid:GiveTask(label.InputBegan:connect(function(input)
+                if input.UserInputType.Name == 'MouseButton1' then
+                    if self.multiselect then
+                        self.value[value] = not self.value[value]
+                        self:SetValue(self.value);
+                        self.listvalue.Text = ' ';
+                        self.listvalue.CursorPosition = 2;
+                        self.listvalue:CaptureFocus();
+                    else
+                        self:SetValue(value)
+                        self:Close()
+                    end
+                end
+            end));
+        end
+
+        for i, value in next, option.values do
+            option:AddValue(tostring(typeof(i) == 'number' and value or i))
+        end
+
+        function option:RemoveValue(value)
+            local label = self.labels[value]
+            if label then
+                label:Destroy()
+                self.labels[value] = nil
+                valueCount = valueCount - 1
+                if self.multiselect then
+                    self.values[value] = nil
+                    self:SetValue(self.value)
+                else
+                    table.remove(self.values, table.find(self.values, value))
+                    if self.value == value then
+                        self:SetValue(self.values[1] or '')
+
+                        if (not self.values[1]) then
+                            option.listvalue.Text = '';
+                        end;
+                    end
+                end
+            end
+        end
+
+        function option:SetValue(value, nocallback)
+            if self.multiselect and typeof(value) ~= 'table' then
+                value = {}
+                for i,v in next, self.values do
+                    value[v] = false
+                end
+            end
+
+            if (not value) then return end;
+
+            self.value = self.multiselect and value or self.values[table.find(self.values, value) or 1];
+            if (self.playerOnly and not self.multiselect) then
+                self.value = Players:FindFirstChild(value);
+            end;
+
+            if (not self.value) then return end;
+
+            library.flags[self.flag] = self.value;
+            option.listvalue.Text = ' ' .. (self.multiselect and getMultiText() or tostring(self.value));
+
+            for name, label in next, self.labels do
+                local visible = self.multiselect and self.value[name] or self.value == name;
+                label.TextTransparency = visible and 1 or 0;
+                if label:FindFirstChild'TextLabel' then
+                    label.TextLabel.Visible = visible;
+                end;
+            end;
+
+            if not nocallback then
+                self.callback(self.value)
+            end
+        end
+
+        task.defer(function()
+            if library and not option.noload then
+                option:SetValue(option.value)
+            end
+        end)
+
+        function option:Close()
+            library.popup = nil
+            option.arrow.Rotation = 90
+            self.open = false
+            option.holder.Visible = false
+            option.listvalue.BorderColor3 = Color3.new()
+            option.listvalue:ReleaseFocus();
+            option.listvalue.Text = ' ' .. (self.multiselect and getMultiText() or tostring(self.value));
+
+            for _, label in next, option.labels do
+                label.Visible = true;
+            end;
+        end
+
+        return option
+    end
+
+    local function createBox(option, parent)
+        option.hasInit = true
+
+        option.main = library:Create('Frame', {
+            LayoutOrder = option.position,
+            Size = UDim2.new(1, 0, 0, option.text == 'nil' and 28 or 44),
+            BackgroundTransparency = 1,
+            Parent = parent
+        })
+
+        if option.text ~= 'nil' then
+            option.title = library:Create('TextLabel', {
+                Position = UDim2.new(0, 6, 0, 0),
+                Size = UDim2.new(1, -12, 0, 18),
+                BackgroundTransparency = 1,
+                Text = option.text,
+                TextSize = 15,
+                Font = Enum.Font.Code,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = option.main
+            })
+        end
+
+        option.holder = library:Create('Frame', {
+            Position = UDim2.new(0, 6, 0, option.text == 'nil' and 4 or 20),
+            Size = UDim2.new(1, -12, 0, 20),
+            BackgroundColor3 = Color3.fromRGB(50, 50, 50),
+            BorderColor3 = Color3.new(),
+            Parent = option.main
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2454009026',
+            ImageColor3 = Color3.new(),
+            ImageTransparency = 0.8,
+            Parent = option.holder
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.fromRGB(60, 60, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.holder
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, -2, 1, -2),
+            Position = UDim2.new(0, 1, 0, 1),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.holder
+        })
+
+        local inputvalue = library:Create('TextBox', {
+            Position = UDim2.new(0, 4, 0, 0),
+            Size = UDim2.new(1, -4, 1, 0),
+            BackgroundTransparency = 1,
+            Text = '  ' .. option.value,
+            TextSize = 15,
+            Font = Enum.Font.Code,
+            TextColor3 = Color3.new(1, 1, 1),
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextWrapped = true,
+            ClearTextOnFocus = false,
+            Parent = option.holder
+        })
+
+        library.unloadMaid:GiveTask(inputvalue.FocusLost:connect(function(enter)
+            option.holder.BorderColor3 = Color3.new()
+            option:SetValue(inputvalue.Text, enter)
+        end));
+
+        library.unloadMaid:GiveTask(inputvalue.Focused:connect(function()
+            option.holder.BorderColor3 = library.flags.menuAccentColor
+        end));
+
+        library.unloadMaid:GiveTask(inputvalue.InputBegan:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                if not library.warning and not library.slider then
+                    option.holder.BorderColor3 = library.flags.menuAccentColor
+                end
+                if option.tip then
+                    library.tooltip.Text = option.tip;
+                end
+            end
+        end));
+
+        makeTooltip(inputvalue, option);
+
+        library.unloadMaid:GiveTask(inputvalue.InputEnded:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                if not inputvalue:IsFocused() then
+                    option.holder.BorderColor3 = Color3.new();
+                end;
+            end;
+        end));
+
+        function option:SetValue(value, enter)
+            if (value:gsub('%s+', '') == '') then
+                value = '';
+            end;
+
+            library.flags[self.flag] = tostring(value);
+            self.value = tostring(value);
+            inputvalue.Text = self.value;
+            self.callback(value, enter);
+
+            library.OnFlagChanged:Fire(self);
+        end
+        task.defer(function()
+            if library then
+                option:SetValue(option.value)
+            end
+        end)
+    end
+
+    local function createColorPickerWindow(option)
+        option.mainHolder = library:Create('TextButton', {
+            ZIndex = 4,
+            --Position = UDim2.new(1, -184, 1, 6),
+            Size = UDim2.new(0, option.trans and 200 or 184, 0, 264),
+            BackgroundColor3 = Color3.fromRGB(40, 40, 40),
+            BorderColor3 = Color3.new(),
+            AutoButtonColor = false,
+            Visible = false,
+            Parent = library.base
+        })
+
+        option.rgbBox = library:Create('Frame', {
+            Position = UDim2.new(0, 6, 0, 214),
+            Size = UDim2.new(0, (option.mainHolder.AbsoluteSize.X - 12), 0, 20),
+            BackgroundColor3 = Color3.fromRGB(57, 57, 57),
+            BorderColor3 = Color3.new(),
+            ZIndex = 5;
+            Parent = option.mainHolder
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2454009026',
+            ImageColor3 = Color3.new(),
+            ImageTransparency = 0.8,
+            ZIndex = 6;
+            Parent = option.rgbBox
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.fromRGB(60, 60, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            ZIndex = 6;
+            Parent = option.rgbBox
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, -2, 1, -2),
+            Position = UDim2.new(0, 1, 0, 1),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            ZIndex = 6;
+            Parent = option.rgbBox
+        })
+
+        local r, g, b = library.round(option.color);
+        local colorText = table.concat({r, g, b}, ',');
+
+        option.rgbInput = library:Create('TextBox', {
+            Position = UDim2.new(0, 4, 0, 0),
+            Size = UDim2.new(1, -4, 1, 0),
+            BackgroundTransparency = 1,
+            Text = colorText,
+            TextSize = 14,
+            Font = Enum.Font.Code,
+            TextColor3 = Color3.new(1, 1, 1),
+            TextXAlignment = Enum.TextXAlignment.Center,
+            TextWrapped = true,
+            ClearTextOnFocus = false,
+            ZIndex = 6;
+            Parent = option.rgbBox
+        })
+
+        option.hexBox = option.rgbBox:Clone()
+        option.hexBox.Position = UDim2.new(0, 6, 0, 238)
+        -- option.hexBox.Size = UDim2.new(0, (option.mainHolder.AbsoluteSize.X/2 - 10), 0, 20)
+        option.hexBox.Parent = option.mainHolder
+        option.hexInput = option.hexBox.TextBox;
+
+        library:Create('ImageLabel', {
+            ZIndex = 4,
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.fromRGB(60, 60, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.mainHolder
+        })
+
+        library:Create('ImageLabel', {
+            ZIndex = 4,
+            Size = UDim2.new(1, -2, 1, -2),
+            Position = UDim2.new(0, 1, 0, 1),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.mainHolder
+        })
+
+        local hue, sat, val = Color3.toHSV(option.color)
+        hue, sat, val = hue == 0 and 1 or hue, sat + 0.005, val - 0.005
+        local editinghue
+        local editingsatval
+        local editingtrans
+
+        local transMain
+        if option.trans then
+            transMain = library:Create('ImageLabel', {
+                ZIndex = 5,
+                Size = UDim2.new(1, 0, 1, 0),
+                BackgroundTransparency = 1,
+                Image = 'rbxassetid://2454009026',
+                ImageColor3 = Color3.fromHSV(hue, 1, 1),
+                Rotation = 180,
+                Parent = library:Create('ImageLabel', {
+                    ZIndex = 4,
+                    AnchorPoint = Vector2.new(1, 0),
+                    Position = UDim2.new(1, -6, 0, 6),
+                    Size = UDim2.new(0, 10, 1, -60),
+                    BorderColor3 = Color3.new(),
+                    Image = 'rbxassetid://4632082392',
+                    ScaleType = Enum.ScaleType.Tile,
+                    TileSize = UDim2.new(0, 5, 0, 5),
+                    Parent = option.mainHolder
+                })
+            })
+
+            option.transSlider = library:Create('Frame', {
+                ZIndex = 5,
+                Position = UDim2.new(0, 0, option.trans, 0),
+                Size = UDim2.new(1, 0, 0, 2),
+                BackgroundColor3 = Color3.fromRGB(38, 41, 65),
+                BorderColor3 = Color3.fromRGB(255, 255, 255),
+                Parent = transMain
+            })
+
+            library.unloadMaid:GiveTask(transMain.InputBegan:connect(function(Input)
+                if Input.UserInputType.Name == 'MouseButton1' then
+                    editingtrans = true
+                    option:SetTrans(1 - ((Input.Position.Y - transMain.AbsolutePosition.Y) / transMain.AbsoluteSize.Y))
+                end
+            end));
+
+            library.unloadMaid:GiveTask(transMain.InputEnded:connect(function(Input)
+                if Input.UserInputType.Name == 'MouseButton1' then
+                    editingtrans = false
+                end
+            end));
+        end
+
+        local hueMain = library:Create('Frame', {
+            ZIndex = 4,
+            AnchorPoint = Vector2.new(0, 1),
+            Position = UDim2.new(0, 6, 1, -54),
+            Size = UDim2.new(1, option.trans and -28 or -12, 0, 10),
+            BackgroundColor3 = Color3.new(1, 1, 1),
+            BorderColor3 = Color3.new(),
+            Parent = option.mainHolder
+        })
+
+        library:Create('UIGradient', {
+            Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+                ColorSequenceKeypoint.new(0.17, Color3.fromRGB(255, 0, 255)),
+                ColorSequenceKeypoint.new(0.33, Color3.fromRGB(0, 0, 255)),
+                ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 255, 255)),
+                ColorSequenceKeypoint.new(0.67, Color3.fromRGB(0, 255, 0)),
+                ColorSequenceKeypoint.new(0.83, Color3.fromRGB(255, 255, 0)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0)),
+            }),
+            Parent = hueMain
+        })
+
+        local hueSlider = library:Create('Frame', {
+            ZIndex = 4,
+            Position = UDim2.new(1 - hue, 0, 0, 0),
+            Size = UDim2.new(0, 2, 1, 0),
+            BackgroundColor3 = Color3.fromRGB(38, 41, 65),
+            BorderColor3 = Color3.fromRGB(255, 255, 255),
+            Parent = hueMain
+        })
+
+        library.unloadMaid:GiveTask(hueMain.InputBegan:connect(function(Input)
+            if Input.UserInputType.Name == 'MouseButton1' then
+                editinghue = true
+                local X = (hueMain.AbsolutePosition.X + hueMain.AbsoluteSize.X) - hueMain.AbsolutePosition.X
+                X = math.clamp((Input.Position.X - hueMain.AbsolutePosition.X) / X, 0, 0.995)
+                option:SetColor(Color3.fromHSV(1 - X, sat, val))
+            end
+        end));
+
+        library.unloadMaid:GiveTask(hueMain.InputEnded:connect(function(Input)
+            if Input.UserInputType.Name == 'MouseButton1' then
+                editinghue = false
+            end
+        end));
+
+        local satval = library:Create('ImageLabel', {
+            ZIndex = 4,
+            Position = UDim2.new(0, 6, 0, 6),
+            Size = UDim2.new(1, option.trans and -28 or -12, 1, -74),
+            BackgroundColor3 = Color3.fromHSV(hue, 1, 1),
+            BorderColor3 = Color3.new(),
+            Image = 'rbxassetid://4155801252',
+            ClipsDescendants = true,
+            Parent = option.mainHolder
+        })
+
+        local satvalSlider = library:Create('Frame', {
+            ZIndex = 4,
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(sat, 0, 1 - val, 0),
+            Size = UDim2.new(0, 4, 0, 4),
+            Rotation = 45,
+            BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+            Parent = satval
+        })
+
+        library.unloadMaid:GiveTask(satval.InputBegan:connect(function(Input)
+            if Input.UserInputType.Name == 'MouseButton1' then
+                editingsatval = true
+                local X = (satval.AbsolutePosition.X + satval.AbsoluteSize.X) - satval.AbsolutePosition.X
+                local Y = (satval.AbsolutePosition.Y + satval.AbsoluteSize.Y) - satval.AbsolutePosition.Y
+                X = math.clamp((Input.Position.X - satval.AbsolutePosition.X) / X, 0.005, 1)
+                Y = math.clamp((Input.Position.Y - satval.AbsolutePosition.Y) / Y, 0, 0.995)
+                option:SetColor(Color3.fromHSV(hue, X, 1 - Y))
+            end
+        end));
+
+        library:AddConnection(UserInputService.InputChanged, function(Input)
+            if (not editingsatval and not editinghue and not editingtrans) then return end;
+
+            if Input.UserInputType.Name == 'MouseMovement' then
+                if editingsatval then
+                    local X = (satval.AbsolutePosition.X + satval.AbsoluteSize.X) - satval.AbsolutePosition.X
+                    local Y = (satval.AbsolutePosition.Y + satval.AbsoluteSize.Y) - satval.AbsolutePosition.Y
+                    X = math.clamp((Input.Position.X - satval.AbsolutePosition.X) / X, 0.005, 1)
+                    Y = math.clamp((Input.Position.Y - satval.AbsolutePosition.Y) / Y, 0, 0.995)
+                    option:SetColor(Color3.fromHSV(hue, X, 1 - Y))
+                elseif editinghue then
+                    local X = (hueMain.AbsolutePosition.X + hueMain.AbsoluteSize.X) - hueMain.AbsolutePosition.X
+                    X = math.clamp((Input.Position.X - hueMain.AbsolutePosition.X) / X, 0, 0.995)
+                    option:SetColor(Color3.fromHSV(1 - X, sat, val))
+                elseif editingtrans then
+                    option:SetTrans(1 - ((Input.Position.Y - transMain.AbsolutePosition.Y) / transMain.AbsoluteSize.Y))
+                end
+            end
+        end)
+
+        library.unloadMaid:GiveTask(satval.InputEnded:connect(function(Input)
+            if Input.UserInputType.Name == 'MouseButton1' then
+                editingsatval = false
+            end
+        end));
+
+        option.hexInput.Text = option.color:ToHex();
+
+        library.unloadMaid:GiveTask(option.rgbInput.FocusLost:connect(function()
+            local color = Color3.fromRGB(unpack(option.rgbInput.Text:split(',')));
+            return option:SetColor(color)
+        end));
+
+        library.unloadMaid:GiveTask(option.hexInput.FocusLost:connect(function()
+            local color = Color3.fromHex(option.hexInput.Text);
+            return option:SetColor(color);
+        end));
+
+        function option:updateVisuals(Color)
+            hue, sat, val = Color:ToHSV();
+            hue, sat, val = math.clamp(hue, 0, 1), math.clamp(sat, 0, 1), math.clamp(val, 0, 1);
+
+            hue = hue == 0 and 1 or hue
+            satval.BackgroundColor3 = Color3.fromHSV(hue, 1, 1)
+            if option.trans then
+                transMain.ImageColor3 = Color3.fromHSV(hue, 1, 1)
+            end
+            hueSlider.Position = UDim2.new(1 - hue, 0, 0, 0)
+            satvalSlider.Position = UDim2.new(sat, 0, 1 - val, 0)
+
+            local color = Color3.fromHSV(hue, sat, val);
+            local r, g, b = library.round(color);
+
+            option.hexInput.Text = color:ToHex();
+            option.rgbInput.Text = table.concat({r, g, b}, ',');
+        end
+
+        return option
+    end
+
+    local function createColor(option, parent)
+        option.hasInit = true
+
+        if option.sub then
+            option.main = option:getMain()
+        else
+            option.main = library:Create('Frame', {
+                LayoutOrder = option.position,
+                Size = UDim2.new(1, 0, 0, 20),
+                BackgroundTransparency = 1,
+                Parent = parent
+            })
+
+            option.title = library:Create('TextLabel', {
+                Position = UDim2.new(0, 6, 0, 0),
+                Size = UDim2.new(1, -12, 1, 0),
+                BackgroundTransparency = 1,
+                Text = option.text,
+                TextSize = 15,
+                Font = Enum.Font.Code,
+                TextColor3 = Color3.fromRGB(210, 210, 210),
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = option.main
+            })
+        end
+
+        option.visualize = library:Create(option.sub and 'TextButton' or 'Frame', {
+            Position = UDim2.new(1, -(option.subpos or 0) - 24, 0, 4),
+            Size = UDim2.new(0, 18, 0, 12),
+            SizeConstraint = Enum.SizeConstraint.RelativeYY,
+            BackgroundColor3 = option.color,
+            BorderColor3 = Color3.new(),
+            Parent = option.main
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2454009026',
+            ImageColor3 = Color3.new(),
+            ImageTransparency = 0.6,
+            Parent = option.visualize
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.fromRGB(60, 60, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.visualize
+        })
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, -2, 1, -2),
+            Position = UDim2.new(0, 1, 0, 1),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = option.visualize
+        })
+
+        local interest = option.sub and option.visualize or option.main
+
+        if option.sub then
+            option.visualize.Text = ''
+            option.visualize.AutoButtonColor = false
+        end
+
+        library.unloadMaid:GiveTask(interest.InputBegan:connect(function(input)
+            if input.UserInputType.Name == 'MouseButton1' then
+                if not option.mainHolder then
+                    createColorPickerWindow(option)
+                end
+                if library.popup == option then library.popup:Close() return end
+                if library.popup then library.popup:Close() end
+                option.open = true
+                local pos = option.main.AbsolutePosition
+                option.mainHolder.Position = UDim2.new(0, pos.X + 36 + (option.trans and -16 or 0), 0, pos.Y + 56)
+                option.mainHolder.Visible = true
+                library.popup = option
+                option.visualize.BorderColor3 = library.flags.menuAccentColor
+            end
+            if input.UserInputType.Name == 'MouseMovement' then
+                if not library.warning and not library.slider then
+                    option.visualize.BorderColor3 = library.flags.menuAccentColor
+                end
+                if option.tip then
+                    library.tooltip.Text = option.tip;
+                end
+            end
+        end));
+
+        makeTooltip(interest, option);
+
+        library.unloadMaid:GiveTask(interest.InputEnded:connect(function(input)
+            if input.UserInputType.Name == 'MouseMovement' then
+                if not option.open then
+                    option.visualize.BorderColor3 = Color3.new();
+                end;
+            end;
+        end));
+
+        function option:SetColor(newColor, nocallback, noFire)
+            newColor = newColor or Color3.new(1, 1, 1)
+            if self.mainHolder then
+                self:updateVisuals(newColor)
+            end
+            option.visualize.BackgroundColor3 = newColor
+            library.flags[self.flag] = newColor
+            self.color = newColor
+
+            if not nocallback then
+                task.spawn(self.callback, newColor)
+            end
+
+            if (not noFire) then
+                library.OnFlagChanged:Fire(self);
+            end;
+        end
+
+        if option.trans then
+            function option:SetTrans(value, manual)
+                value = math.clamp(tonumber(value) or 0, 0, 1)
+                if self.transSlider then
+                    self.transSlider.Position = UDim2.new(0, 0, value, 0)
+                end
+                self.trans = value
+                library.flags[self.flag .. 'Transparency'] = 1 - value
+                task.spawn(self.calltrans, value)
+            end
+            option:SetTrans(option.trans)
+        end
+
+        task.defer(function()
+            if library then
+                option:SetColor(option.color)
+            end
+        end)
+
+        function option:Close()
+            library.popup = nil
+            self.open = false
+            self.mainHolder.Visible = false
+            option.visualize.BorderColor3 = Color3.new()
+        end
+    end
+
+    function library:AddTab(title, pos)
+        local tab = {canInit = true, columns = {}, title = tostring(title)}
+        table.insert(self.tabs, pos or #self.tabs + 1, tab)
+
+        function tab:AddColumn()
+            local column = {sections = {}, position = #self.columns, canInit = true, tab = self}
+            table.insert(self.columns, column)
+
+            function column:AddSection(title)
+                local section = {title = tostring(title), options = {}, canInit = true, column = self}
+                table.insert(self.sections, section)
+
+                function section:AddLabel(text)
+                    local option = {text = text}
+                    option.section = self
+                    option.type = 'label'
+                    option.position = #self.options
+                    table.insert(self.options, option)
+
+                    if library.hasInit and self.hasInit then
+                        createLabel(option, self.content)
+                    else
+                        option.Init = createLabel
+                    end
+
+                    return option
+                end
+
+                function section:AddDivider(text, tip)
+                    local option = {text = text, tip = tip}
+                    option.section = self
+                    option.type = 'divider'
+                    option.position = #self.options
+                    table.insert(self.options, option)
+
+                    if library.hasInit and self.hasInit then
+                        createDivider(option, self.content)
+                    else
+                        option.Init = createDivider
+                    end
+
+                    return option
+                end
+
+                function section:AddToggle(option)
+                    option = typeof(option) == 'table' and option or {}
+                    option.section = self
+                    option.text = tostring(option.text)
+                    option.state = typeof(option.state) == 'boolean' and option.state or false
+                    option.default = option.state;
+                    option.callback = typeof(option.callback) == 'function' and option.callback or function() end
+                    option.type = 'toggle'
+                    option.position = #self.options
+                    option.flag = (library.flagprefix or '') .. toCamelCase(option.flag or option.text)
+                    option.subcount = 0
+                    option.tip = option.tip and tostring(option.tip)
+                    option.style = option.style == 2
+                    library.flags[option.flag] = option.state
+                    table.insert(self.options, option)
+                    library.options[option.flag] = option
+
+                    function option:AddColor(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddColor(subOption)
+                    end
+
+                    function option:AddBind(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddBind(subOption)
+                    end
+
+                    function option:AddList(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddList(subOption)
+                    end
+
+                    function option:AddSlider(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+
+                        subOption.parent = option;
+                        return section:AddSlider(subOption)
+                    end
+
+                    if library.hasInit and self.hasInit then
+                        createToggle(option, self.content)
+                    else
+                        option.Init = createToggle
+                    end
+
+                    return option
+                end
+
+                function section:AddButton(option)
+                    option = typeof(option) == 'table' and option or {}
+                    option.section = self
+                    option.text = tostring(option.text)
+                    option.callback = typeof(option.callback) == 'function' and option.callback or function() end
+                    option.type = 'button'
+                    option.position = #self.options
+                    option.flag = (library.flagprefix or '') .. toCamelCase(option.flag or option.text)
+                    option.subcount = 0
+                    option.tip = option.tip and tostring(option.tip)
+                    table.insert(self.options, option)
+                    library.options[option.flag] = option
+
+                    function option:AddBind(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() option.main.Size = UDim2.new(1, 0, 0, 40) return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddBind(subOption)
+                    end
+
+                    function option:AddColor(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() option.main.Size = UDim2.new(1, 0, 0, 40) return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddColor(subOption)
+                    end
+
+                    function option:AddButton(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+                        subOption.parent = option;
+                        section:AddButton(subOption)
+
+                        return option;
+                    end;
+
+                    function option:SetText(text)
+                        option.title.Text = text;
+                    end;
+
+                    if library.hasInit and self.hasInit then
+                        createButton(option, self.content)
+                    else
+                        option.Init = createButton
+                    end
+
+                    return option
+                end
+
+                function section:AddBind(option)
+                    option = typeof(option) == 'table' and option or {}
+                    option.section = self
+                    option.text = tostring(option.text)
+                    option.key = (option.key and option.key.Name) or option.key or 'none'
+                    option.nomouse = typeof(option.nomouse) == 'boolean' and option.nomouse or false
+                    option.mode = typeof(option.mode) == 'string' and ((option.mode == 'toggle' or option.mode == 'hold') and option.mode) or 'toggle'
+                    option.callback = typeof(option.callback) == 'function' and option.callback or function() end
+                    option.type = 'bind'
+                    option.position = #self.options
+                    option.flag = (library.flagprefix or '') .. toCamelCase(option.flag or option.text)
+                    option.tip = option.tip and tostring(option.tip)
+                    table.insert(self.options, option)
+                    library.options[option.flag] = option
+
+                    if library.hasInit and self.hasInit then
+                        createBind(option, self.content)
+                    else
+                        option.Init = createBind
+                    end
+
+                    return option
+                end
+
+                function section:AddSlider(option)
+                    option = typeof(option) == 'table' and option or {}
+                    option.section = self
+                    option.text = tostring(option.text)
+                    option.min = typeof(option.min) == 'number' and option.min or 0
+                    option.max = typeof(option.max) == 'number' and option.max or 0
+                    option.value = option.min < 0 and 0 or math.clamp(typeof(option.value) == 'number' and option.value or option.min, option.min, option.max)
+                    option.default = option.value;
+                    option.callback = typeof(option.callback) == 'function' and option.callback or function() end
+                    option.float = typeof(option.value) == 'number' and option.float or 1
+                    option.suffix = option.suffix and tostring(option.suffix) or ''
+                    option.textpos = option.textpos == 2
+                    option.type = 'slider'
+                    option.position = #self.options
+                    option.flag = (library.flagprefix or '') .. toCamelCase(option.flag or option.text)
+                    option.subcount = 0
+                    option.tip = option.tip and tostring(option.tip)
+                    library.flags[option.flag] = option.value
+                    table.insert(self.options, option)
+                    library.options[option.flag] = option
+
+                    function option:AddColor(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddColor(subOption)
+                    end
+
+                    function option:AddBind(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddBind(subOption)
+                    end
+
+                    if library.hasInit and self.hasInit then
+                        createSlider(option, self.content)
+                    else
+                        option.Init = createSlider
+                    end
+
+                    return option
+                end
+
+                function section:AddList(option)
+                    option = typeof(option) == 'table' and option or {}
+                    option.section = self
+                    option.text = tostring(option.text)
+                    option.values = typeof(option.values) == 'table' and option.values or {}
+                    option.callback = typeof(option.callback) == 'function' and option.callback or function() end
+                    option.multiselect = typeof(option.multiselect) == 'boolean' and option.multiselect or false
+                    --option.groupbox = (not option.multiselect) and (typeof(option.groupbox) == 'boolean' and option.groupbox or false)
+                    option.value = option.multiselect and (typeof(option.value) == 'table' and option.value or {}) or tostring(option.value or option.values[1] or '')
+                    if option.multiselect then
+                        for i,v in next, option.values do
+                            option.value[v] = false
+                        end
+                    end
+                    option.max = option.max or 8
+                    option.open = false
+                    option.type = 'list'
+                    option.position = #self.options
+                    option.labels = {}
+                    option.flag = (library.flagprefix or '') .. toCamelCase(option.flag or option.text)
+                    option.subcount = 0
+                    option.tip = option.tip and tostring(option.tip)
+                    library.flags[option.flag] = option.value
+                    table.insert(self.options, option)
+                    library.options[option.flag] = option
+
+                    function option:AddValue(value, state)
+                        if self.multiselect then
+                            self.values[value] = state
+                        else
+                            table.insert(self.values, value)
+                        end
+                    end
+
+                    function option:AddColor(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddColor(subOption)
+                    end
+
+                    function option:AddBind(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddBind(subOption)
+                    end
+
+                    if library.hasInit and self.hasInit then
+                        createList(option, self.content)
+                    else
+                        option.Init = createList
+                    end
+
+                    return option
+                end
+
+                function section:AddBox(option)
+                    option = typeof(option) == 'table' and option or {}
+                    option.section = self
+                    option.text = tostring(option.text)
+                    option.value = tostring(option.value or '')
+                    option.callback = typeof(option.callback) == 'function' and option.callback or function() end
+                    option.type = 'box'
+                    option.position = #self.options
+                    option.flag = (library.flagprefix or '') .. toCamelCase(option.flag or option.text)
+                    option.tip = option.tip and tostring(option.tip)
+                    library.flags[option.flag] = option.value
+                    table.insert(self.options, option)
+                    library.options[option.flag] = option
+
+                    if library.hasInit and self.hasInit then
+                        createBox(option, self.content)
+                    else
+                        option.Init = createBox
+                    end
+
+                    return option
+                end
+
+                function section:AddColor(option)
+                    option = typeof(option) == 'table' and option or {}
+                    option.section = self
+                    option.text = tostring(option.text)
+                    option.color = typeof(option.color) == 'table' and Color3.new(option.color[1], option.color[2], option.color[3]) or option.color or Color3.new(1, 1, 1)
+                    option.callback = typeof(option.callback) == 'function' and option.callback or function() end
+                    option.calltrans = typeof(option.calltrans) == 'function' and option.calltrans or (option.calltrans == 1 and option.callback) or function() end
+                    option.open = false
+                    option.default = option.color;
+                    option.trans = tonumber(option.trans)
+                    option.subcount = 1
+                    option.type = 'color'
+                    option.position = #self.options
+                    option.flag = (library.flagprefix or '') .. toCamelCase(option.flag or option.text)
+                    option.tip = option.tip and tostring(option.tip)
+                    library.flags[option.flag] = option.color
+                    table.insert(self.options, option)
+                    library.options[option.flag] = option
+
+                    function option:AddColor(subOption)
+                        subOption = typeof(subOption) == 'table' and subOption or {}
+                        subOption.sub = true
+                        subOption.subpos = self.subcount * 24
+                        function subOption:getMain() return option.main end
+                        self.subcount = self.subcount + 1
+                        return section:AddColor(subOption)
+                    end
+
+                    if option.trans then
+                        library.flags[option.flag .. 'Transparency'] = option.trans
+                    end
+
+                    if library.hasInit and self.hasInit then
+                        createColor(option, self.content)
+                    else
+                        option.Init = createColor
+                    end
+
+                    return option
+                end
+
+                function section:SetTitle(newTitle)
+                    self.title = tostring(newTitle)
+                    if self.titleText then
+                        self.titleText.Text = tostring(newTitle)
+                    end
+                end
+
+                function section:Init()
+                    if self.hasInit then return end
+                    self.hasInit = true
+
+                    self.main = library:Create('Frame', {
+                        BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                        BorderColor3 = Color3.new(),
+                        Parent = column.main
+                    })
+
+                    self.content = library:Create('Frame', {
+                        Size = UDim2.new(1, 0, 1, 0),
+                        BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                        BorderColor3 = Color3.fromRGB(60, 60, 60),
+                        BorderMode = Enum.BorderMode.Inset,
+                        Parent = self.main
+                    })
+
+                    library:Create('ImageLabel', {
+                        Size = UDim2.new(1, -2, 1, -2),
+                        Position = UDim2.new(0, 1, 0, 1),
+                        BackgroundTransparency = 1,
+                        Image = 'rbxassetid://2592362371',
+                        ImageColor3 = Color3.new(),
+                        ScaleType = Enum.ScaleType.Slice,
+                        SliceCenter = Rect.new(2, 2, 62, 62),
+                        Parent = self.main
+                    })
+
+                    table.insert(library.theme, library:Create('Frame', {
+                        Size = UDim2.new(1, 0, 0, 1),
+                        BackgroundColor3 = library.flags.menuAccentColor,
+                        BorderSizePixel = 0,
+                        BorderMode = Enum.BorderMode.Inset,
+                        Parent = self.main
+                    }))
+
+                    local layout = library:Create('UIListLayout', {
+                        HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                        SortOrder = Enum.SortOrder.LayoutOrder,
+                        Padding = UDim.new(0, 2),
+                        Parent = self.content
+                    })
+
+                    library:Create('UIPadding', {
+                        PaddingTop = UDim.new(0, 12),
+                        Parent = self.content
+                    })
+
+                    self.titleText = library:Create('TextLabel', {
+                        AnchorPoint = Vector2.new(0, 0.5),
+                        Position = UDim2.new(0, 12, 0, 0),
+                        Size = UDim2.new(0, TextService:GetTextSize(self.title, 15, Enum.Font.Code, Vector2.new(9e9, 9e9)).X + 10, 0, 3),
+                        BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                        BorderSizePixel = 0,
+                        Text = self.title,
+                        TextSize = 15,
+                        Font = Enum.Font.Code,
+                        TextColor3 = Color3.new(1, 1, 1),
+                        Parent = self.main
+                    })
+
+                    library.unloadMaid:GiveTask(layout.Changed:connect(function()
+                        self.main.Size = UDim2.new(1, 0, 0, layout.AbsoluteContentSize.Y + 16)
+                    end));
+
+                    for _, option in next, self.options do
+                        option.Init(option, self.content)
+                    end
+                end
+
+                if library.hasInit and self.hasInit then
+                    section:Init()
+                end
+
+                return section
+            end
+
+            function column:Init()
+                if self.hasInit then return end
+                self.hasInit = true
+
+                self.main = library:Create('ScrollingFrame', {
+                    ZIndex = 2,
+                    Position = UDim2.new(0, 6 + (self.position * 239), 0, 2),
+                    Size = UDim2.new(0, 233, 1, -4),
+                    BackgroundTransparency = 1,
+                    BorderSizePixel = 0,
+                    ScrollBarImageColor3 = Color3.fromRGB(),
+                    ScrollBarThickness = 4,
+                    VerticalScrollBarInset = Enum.ScrollBarInset.ScrollBar,
+                    ScrollingDirection = Enum.ScrollingDirection.Y,
+                    Visible = true
+                })
+
+                local layout = library:Create('UIListLayout', {
+                    HorizontalAlignment = Enum.HorizontalAlignment.Center,
+                    SortOrder = Enum.SortOrder.LayoutOrder,
+                    Padding = UDim.new(0, 12),
+                    Parent = self.main
+                })
+
+                library:Create('UIPadding', {
+                    PaddingTop = UDim.new(0, 8),
+                    PaddingLeft = UDim.new(0, 2),
+                    PaddingRight = UDim.new(0, 2),
+                    Parent = self.main
+                })
+
+                library.unloadMaid:GiveTask(layout.Changed:connect(function()
+                    self.main.CanvasSize = UDim2.new(0, 0, 0, layout.AbsoluteContentSize.Y + 14)
+                end));
+
+                for _, section in next, self.sections do
+                    if section.canInit and #section.options > 0 then
+                        section:Init()
+                    end
+                end
+            end
+
+            if library.hasInit and self.hasInit then
+                column:Init()
+            end
+
+            return column
+        end
+
+        function tab:Init()
+            if self.hasInit then return end
+            self.hasInit = true
+
+            local size = TextService:GetTextSize(self.title, 18, Enum.Font.Code, Vector2.new(9e9, 9e9)).X + 10
+
+            self.button = library:Create('TextLabel', {
+                Position = UDim2.new(0, library.tabSize, 0, 22),
+                Size = UDim2.new(0, size, 0, 30),
+                BackgroundTransparency = 1,
+                Text = self.title,
+                TextColor3 = Color3.new(1, 1, 1),
+                TextSize = 15,
+                Font = Enum.Font.Code,
+                TextWrapped = true,
+                ClipsDescendants = true,
+                Parent = library.main
+            });
+
+            library.tabSize = library.tabSize + size
+
+            library.unloadMaid:GiveTask(self.button.InputBegan:connect(function(input)
+                if input.UserInputType.Name == 'MouseButton1' then
+                    library:selectTab(self);
+                end;
+            end));
+
+            for _, column in next, self.columns do
+                if column.canInit then
+                    column:Init();
+                end;
+            end;
+        end;
+
+        if self.hasInit then
+            tab:Init()
+        end
+
+        return tab
+    end
+
+    function library:AddWarning(warning)
+        warning = typeof(warning) == 'table' and warning or {}
+        warning.text = tostring(warning.text)
+        warning.type = warning.type == 'confirm' and 'confirm' or ''
+
+        local answer
+        function warning:Show()
+            library.warning = warning
+            if warning.main and warning.type == '' then
+                warning.main:Destroy();
+                warning.main = nil;
+            end
+            if library.popup then library.popup:Close() end
+            if not warning.main then
+                warning.main = library:Create('TextButton', {
+                    ZIndex = 2,
+                    Size = UDim2.new(1, 0, 1, 0),
+                    BackgroundTransparency = 0.3,
+                    BackgroundColor3 = Color3.new(),
+                    BorderSizePixel = 0,
+                    Text = '',
+                    AutoButtonColor = false,
+                    Parent = library.main
+                })
+
+                warning.message = library:Create('TextLabel', {
+                    ZIndex = 2,
+                    Position = UDim2.new(0, 20, 0.5, -60),
+                    Size = UDim2.new(1, -40, 0, 40),
+                    BackgroundTransparency = 1,
+                    TextSize = 16,
+                    Font = Enum.Font.Code,
+                    TextColor3 = Color3.new(1, 1, 1),
+                    TextWrapped = true,
+                    RichText = true,
+                    Parent = warning.main
+                })
+
+                if warning.type == 'confirm' then
+                    local button = library:Create('TextLabel', {
+                        ZIndex = 2,
+                        Position = UDim2.new(0.5, -105, 0.5, -10),
+                        Size = UDim2.new(0, 100, 0, 20),
+                        BackgroundColor3 = Color3.fromRGB(40, 40, 40),
+                        BorderColor3 = Color3.new(),
+                        Text = 'Yes',
+                        TextSize = 16,
+                        Font = Enum.Font.Code,
+                        TextColor3 = Color3.new(1, 1, 1),
+                        Parent = warning.main
+                    })
+
+                    library:Create('ImageLabel', {
+                        ZIndex = 2,
+                        Size = UDim2.new(1, 0, 1, 0),
+                        BackgroundTransparency = 1,
+                        Image = 'rbxassetid://2454009026',
+                        ImageColor3 = Color3.new(),
+                        ImageTransparency = 0.8,
+                        Parent = button
+                    })
+
+                    library:Create('ImageLabel', {
+                        ZIndex = 2,
+                        Size = UDim2.new(1, 0, 1, 0),
+                        BackgroundTransparency = 1,
+                        Image = 'rbxassetid://2592362371',
+                        ImageColor3 = Color3.fromRGB(60, 60, 60),
+                        ScaleType = Enum.ScaleType.Slice,
+                        SliceCenter = Rect.new(2, 2, 62, 62),
+                        Parent = button
+                    })
+
+                    local button1 = library:Create('TextLabel', {
+                        ZIndex = 2,
+                        Position = UDim2.new(0.5, 5, 0.5, -10),
+                        Size = UDim2.new(0, 100, 0, 20),
+                        BackgroundColor3 = Color3.fromRGB(40, 40, 40),
+                        BorderColor3 = Color3.new(),
+                        Text = 'No',
+                        TextSize = 16,
+                        Font = Enum.Font.Code,
+                        TextColor3 = Color3.new(1, 1, 1),
+                        Parent = warning.main
+                    })
+
+                    library:Create('ImageLabel', {
+                        ZIndex = 2,
+                        Size = UDim2.new(1, 0, 1, 0),
+                        BackgroundTransparency = 1,
+                        Image = 'rbxassetid://2454009026',
+                        ImageColor3 = Color3.new(),
+                        ImageTransparency = 0.8,
+                        Parent = button1
+                    })
+
+                    library:Create('ImageLabel', {
+                        ZIndex = 2,
+                        Size = UDim2.new(1, 0, 1, 0),
+                        BackgroundTransparency = 1,
+                        Image = 'rbxassetid://2592362371',
+                        ImageColor3 = Color3.fromRGB(60, 60, 60),
+                        ScaleType = Enum.ScaleType.Slice,
+                        SliceCenter = Rect.new(2, 2, 62, 62),
+                        Parent = button1
+                    })
+
+                    library.unloadMaid:GiveTask(button.InputBegan:connect(function(input)
+                        if input.UserInputType.Name == 'MouseButton1' then
+                            answer = true
+                        end
+                    end));
+
+                    library.unloadMaid:GiveTask(button1.InputBegan:connect(function(input)
+                        if input.UserInputType.Name == 'MouseButton1' then
+                            answer = false
+                        end
+                    end));
+                else
+                    local button = library:Create('TextLabel', {
+                        ZIndex = 2,
+                        Position = UDim2.new(0.5, -50, 0.5, -10),
+                        Size = UDim2.new(0, 100, 0, 20),
+                        BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+                        BorderColor3 = Color3.new(),
+                        Text = 'OK',
+                        TextSize = 16,
+                        Font = Enum.Font.Code,
+                        TextColor3 = Color3.new(1, 1, 1),
+                        Parent = warning.main
+                    })
+
+                    library.unloadMaid:GiveTask(button.InputEnded:connect(function(input)
+                        if input.UserInputType.Name == 'MouseButton1' then
+                            answer = true
+                        end
+                    end));
+                end
+            end
+            warning.main.Visible = true
+            warning.message.Text = warning.text
+
+            repeat task.wait() until answer ~= nil;
+            library.warning = nil;
+
+            local answerCopy = answer;
+            warning:Close();
+
+            return answerCopy;
+        end
+
+        function warning:Close()
+            answer = nil
+            if not warning.main then return end
+            warning.main.Visible = false
+        end
+
+        return warning
+    end
+
+    function library:Close()
+        self.open = not self.open
+
+        if self.main then
+            if self.popup then
+                self.popup:Close()
+            end
+
+            self.base.Enabled = self.open
+        end
+
+        library.tooltip.Position = UDim2.fromScale(10, 10);
+    end
+
+    function library:Init(silent)
+        if self.hasInit then return end
+
+        self.hasInit = true
+        self.base = library:Create('ScreenGui', {IgnoreGuiInset = true, AutoLocalize = false, Enabled = not silent})
+        self.dummyBox = library:Create('TextBox', {Visible = false, Parent = self.base});
+        self.dummyModal = library:Create('TextButton', {Visible = false, Modal = true, Parent = self.base});
+
+        self.unloadMaid:GiveTask(self.base);
+
+        if RunService:IsStudio() then
+            self.base.Parent = script.Parent.Parent
+        elseif syn then
+            if(gethui) then
+                self.base.Parent = gethui();
+            else
+                pcall(syn.protect_gui, self.base);
+                self.base.Parent = CoreGui;
+            end;
+        end
+
+        self.main = self:Create('ImageButton', {
+            AutoButtonColor = false,
+            Position = UDim2.new(0, 100, 0, 46),
+            Size = UDim2.new(0, 500, 0, 600),
+            BackgroundColor3 = Color3.fromRGB(20, 20, 20),
+            BorderColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Tile,
+            Visible = true,
+            Parent = self.base
+        })
+
+        local top = self:Create('Frame', {
+            Size = UDim2.new(1, 0, 0, 50),
+            BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+            BorderColor3 = Color3.new(),
+            Parent = self.main
+        })
+
+        self.titleLabel = self:Create('TextLabel', {
+            Position = UDim2.new(0, 6, 0, -1),
+            Size = UDim2.new(0, 0, 0, 20),
+            BackgroundTransparency = 1,
+            Text = tostring(self.title),
+            Font = Enum.Font.Code,
+            TextSize = 18,
+            TextColor3 = Color3.new(1, 1, 1),
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = self.main
+        })
+
+        table.insert(library.theme, self:Create('Frame', {
+            Size = UDim2.new(1, 0, 0, 1),
+            Position = UDim2.new(0, 0, 0, 24),
+            BackgroundColor3 = library.flags.menuAccentColor,
+            BorderSizePixel = 0,
+            Parent = self.main
+        }))
+
+        library:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2454009026',
+            ImageColor3 = Color3.new(),
+            ImageTransparency = 0.4,
+            Parent = top
+        })
+
+        self.tabHighlight = self:Create('Frame', {
+            BackgroundColor3 = library.flags.menuAccentColor,
+            BorderSizePixel = 0,
+            Parent = self.main
+        })
+        table.insert(library.theme, self.tabHighlight)
+
+        self.columnHolder = self:Create('Frame', {
+            Position = UDim2.new(0, 5, 0, 55),
+            Size = UDim2.new(1, -10, 1, -60),
+            BackgroundTransparency = 1,
+            Parent = self.main
+        })
+
+        self.tooltip = self:Create('TextLabel', {
+            ZIndex = 2,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            TextSize = 15,
+            Size = UDim2.fromOffset(0, 0),
+            Position = UDim2.fromScale(10, 10),
+            Font = Enum.Font.Code,
+            TextColor3 = Color3.new(1, 1, 1),
+            Visible = true,
+            Active = false,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = self.base,
+            AutomaticSize = Enum.AutomaticSize.XY
+        })
+
+        self:Create('UISizeConstraint', {
+            Parent = self.tooltip,
+            MaxSize = Vector2.new(400, 1000),
+            MinSize = Vector2.new(0, 0),
+        });
+
+        self:Create('Frame', {
+            AnchorPoint = Vector2.new(0.5, 0),
+            Position = UDim2.new(0.5, 0, 0, 0),
+            Size = UDim2.new(1, 10, 1, 0),
+            Active = false,
+            Style = Enum.FrameStyle.RobloxRound,
+            Parent = self.tooltip
+        })
+
+        self:Create('ImageLabel', {
+            Size = UDim2.new(1, 0, 1, 0),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.fromRGB(60, 60, 60),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = self.main
+        })
+
+        self:Create('ImageLabel', {
+            Size = UDim2.new(1, -2, 1, -2),
+            Position = UDim2.new(0, 1, 0, 1),
+            BackgroundTransparency = 1,
+            Image = 'rbxassetid://2592362371',
+            ImageColor3 = Color3.new(),
+            ScaleType = Enum.ScaleType.Slice,
+            SliceCenter = Rect.new(2, 2, 62, 62),
+            Parent = self.main
+        })
+
+        library.unloadMaid:GiveTask(top.InputBegan:connect(function(input)
+            if input.UserInputType.Name == 'MouseButton1' then
+                dragObject = self.main
+                dragging = true
+                dragStart = input.Position
+                startPos = dragObject.Position
+                if library.popup then library.popup:Close() end
+            end
+        end));
+
+        library.unloadMaid:GiveTask(top.InputChanged:connect(function(input)
+            if dragging and input.UserInputType.Name == 'MouseMovement' then
+                dragInput = input
+            end
+        end));
+
+        library.unloadMaid:GiveTask(top.InputEnded:connect(function(input)
+            if input.UserInputType.Name == 'MouseButton1' then
+                dragging = false
+            end
+        end));
+
+        local titleTextSize = TextService:GetTextSize(self.titleLabel.Text, 18, Enum.Font.Code, Vector2.new(1000, 0));
+
+        local searchLabel = library:Create('ImageLabel', {
+            Position = UDim2.new(0, titleTextSize.X + 10, 0.5, -8),
+            Size = UDim2.new(0, 16, 0, 16),
+            BackgroundTransparency = 1,
+            Image = 'rbxasset://textures/ui/Settings/ShareGame/icons.png',
+            ImageRectSize = Vector2.new(16, 16),
+            ImageRectOffset = Vector2.new(6, 106),
+            ClipsDescendants = true,
+            Parent = self.titleLabel
+        });
+
+        local searchBox = library:Create('TextBox', {
+            BackgroundTransparency = 1,
+            Position = UDim2.fromOffset(searchLabel.AbsolutePosition.X-80, 5),
+            Size = UDim2.fromOffset(50, 15),
+            TextColor3 = Color3.fromRGB(255, 255, 255),
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = self.titleLabel,
+            Text = '',
+            PlaceholderText = 'Type something to search...',
+            Visible = false
+        });
+
+        local searchContainer = library:Create('ScrollingFrame', {
+            BackgroundTransparency = 1,
+            Visible = false,
+            Size = UDim2.fromScale(1, 1),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            Parent = library.columnHolder,
+            BorderSizePixel = 0,
+            ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100),
+            ScrollBarThickness = 6,
+            CanvasSize = UDim2.new(),
+            ScrollingDirection = Enum.ScrollingDirection.Y,
+            VerticalScrollBarInset = Enum.ScrollBarInset.Always,
+            TopImage = 'rbxasset://textures/ui/Scroll/scroll-middle.png',
+            BottomImage = 'rbxasset://textures/ui/Scroll/scroll-middle.png',
+        });
+
+        library:Create('UIListLayout', {
+            Parent = searchContainer
+        })
+
+        local allFoundResults = {};
+        local modifiedNames = {};
+
+        local function clearFoundResult()
+            for _, option in next, allFoundResults do
+                option.main.Parent = option.originalParent;
+            end;
+
+            for _, option in next, modifiedNames do
+                option.title.Text = option.text;
+                option.main.Parent = option.originalParent;
+            end;
+
+            table.clear(allFoundResults);
+            table.clear(modifiedNames);
+        end;
+
+        local sFind, sLower = string.find, string.lower;
+
+        library.unloadMaid:GiveTask(searchBox:GetPropertyChangedSignal('Text'):Connect(function()
+            local text = string.lower(searchBox.Text):gsub('%s', '');
+
+            for _, v in next, library.options do
+                if (not v.originalParent) then
+                    v.originalParent = v.main.Parent;
+                end;
+            end;
+
+            clearFoundResult();
+
+            for _, v in next, library.currentTab.columns do
+                v.main.Visible = text == '' and true or false;
+            end;
+
+            if (text == '') then return; end;
+            local matchedResults = false;
+
+            for _, v in next, library.options do
+                local main = v.main;
+
+                if (v.text == 'Enable' or v.parentFlag) then
+                    if (v.type == 'toggle' or v.type == 'bind') then
+                        local parentName = v.parentFlag and 'Bind' or v.section.title;
+                        v.title.Text = string.format('%s [%s]', v.text, parentName);
+
+                        table.insert(modifiedNames, v);
+                    end;
+                end;
+
+                if (sFind(sLower(v.text), text) or sFind(sLower(v.flag), text)) then
+                    matchedResults = true;
+                    main.Parent = searchContainer;
+                    table.insert(allFoundResults, v);
+                else
+                    main.Parent = v.originalParent;
+                end;
+            end;
+
+            searchContainer.Visible = matchedResults;
+        end));
+
+        library.unloadMaid:GiveTask(searchLabel.InputBegan:Connect(function(inputObject)
+            if(inputObject.UserInputType ~= Enum.UserInputType.MouseButton1) then return end;
+            searchBox.Visible = true;
+            searchBox:CaptureFocus();
+        end));
+
+        library.unloadMaid:GiveTask(searchBox.FocusLost:Connect(function()
+            if (searchBox.Text:gsub('%s', '') ~= '') then return end;
+            searchBox.Visible = false;
+        end));
+
+
+        local tweenInfo = TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out);
+
+        function self:selectTab(tab)
+            if self.currentTab == tab then return end
+            if library.popup then library.popup:Close() end
+            clearFoundResult();
+            searchBox.Visible = false;
+            searchBox.Text = '';
+
+            if self.currentTab then
+                self.currentTab.button.TextColor3 = Color3.fromRGB(255, 255, 255)
+                for _, column in next, self.currentTab.columns do
+                    column.main.Parent = nil;
+                    column.main.Visible = true;
+                end
+            end
+            self.main.Size = UDim2.new(0, 16 + ((#tab.columns < 2 and 2 or #tab.columns) * 239), 0, 600)
+            self.currentTab = tab
+            tab.button.TextColor3 = library.flags.menuAccentColor;
+
+            TweenService:Create(self.tabHighlight, tweenInfo, {
+                Position = UDim2.new(0, tab.button.Position.X.Offset, 0, 50),
+                Size = UDim2.new(0, tab.button.AbsoluteSize.X, 0, -1)
+            }):Play();
+
+            for _, column in next, tab.columns do
+                column.main.Parent = self.columnHolder
+            end
+        end
+
+        task.spawn(function()
+            while library do
+                local Configs = self:GetConfigs()
+                for _, config in next, Configs do
+                    if config ~= 'nil' and not table.find(self.options.configList.values, config) then
+                        self.options.configList:AddValue(config)
+                    end
+                end
+                for _, config in next, self.options.configList.values do
+                    if config ~= 'nil' and not table.find(Configs, config) then
+                        self.options.configList:RemoveValue(config)
+                    end
+                end
+                task.wait(1);
+            end
+        end)
+
+        for _, tab in next, self.tabs do
+            if tab.canInit then
+                tab:Init();
+            end;
+        end;
+
+        self:AddConnection(UserInputService.InputEnded, function(input)
+            if (input.UserInputType.Name == 'MouseButton1') and self.slider then
+                self.slider.slider.BorderColor3 = Color3.new();
+                self.slider = nil;
+            end;
+        end);
+
+        self:AddConnection(UserInputService.InputChanged, function(input)
+            if self.open then
+                if input == dragInput and dragging and library.draggable then
+                    local delta = input.Position - dragStart;
+                    local yPos = (startPos.Y.Offset + delta.Y) < -36 and -36 or startPos.Y.Offset + delta.Y;
+
+                    dragObject:TweenPosition(UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, yPos), 'Out', 'Quint', 0.1, true);
+                end;
+
+                if self.slider and input.UserInputType.Name == 'MouseMovement' then
+                    self.slider:SetValue(self.slider.min + ((input.Position.X - self.slider.slider.AbsolutePosition.X) / self.slider.slider.AbsoluteSize.X) * (self.slider.max - self.slider.min));
+                end;
+            end;
+        end);
+
+        local configData = readFileAndDecodeIt(library.foldername .. '/' .. library.fileext);
+
+        if (configData) then
+            library.configVars = configData;
+            library:LoadConfig(configData.config);
+
+            library.OnLoad:Connect(function()
+                library.options.configList:SetValue(library.loadedConfig or 'default');
+            end);
+        else
+            print('[Script] [Config Loader] An error has occured', configData);
+        end;
+
+        self:selectTab(self.tabs[1]);
+
+        if (not silent) then
+            self:Close();
+        else
+            self.open = false;
+        end;
+
+        library.OnLoad:Fire();
+        library.OnLoad:Destroy();
+        library.OnLoad = nil;
+    end;
+
+    function library:SetTitle(text)
+        if (not self.titleLabel) then
+            return;
+        end;
+
+        self.titleLabel.Text = text;
+    end;
+
+    do -- // Load Basics
+        local configWarning = library:AddWarning({type = 'confirm'})
+        local messageWarning = library:AddWarning();
+
+        function library:ShowConfirm(text)
+            configWarning.text = text;
+            return configWarning:Show();
+        end;
+
+        function library:ShowMessage(text)
+            messageWarning.text = text;
+            return messageWarning:Show();
+        end
+
+        local function showBasePrompt(text)
+            local r, g, b = library.round(library.flags.menuAccentColor);
+
+            local configName = text == 'create' and library.flags.configName or library.flags.configList;
+            local trimedValue = configName:gsub('%s', '');
+
+            if(trimedValue == '') then
+                library:ShowMessage(string.format('Can not %s a config with no name !', text));
+                return false;
+            end;
+
+            return library:ShowConfirm(string.format(
+                'Are you sure you want to %s config <font color=\'rgb(%s, %s, %s)\'>%s</font>',
+                text,
+                r,
+                g,
+                b,
+                configName
+            ));
+        end;
+
+        local joinDiscord;
+
+        do -- // Utils
+            function joinDiscord(code)
+                for i = 6463, 6472 do -- // Just cause there is a 10 range port
+                    if(pcall(function()
+                        syn.request({
+                            Url = ('http://127.0.0.1:%s/rpc?v=1'):format(i),
+                            Method = 'POST',
+                            Headers = {
+                                ['Content-Type'] = 'application/json',
+                                Origin = 'https://discord.com' -- // memery moment
+                            },
+                            Body = ('{"cmd":"INVITE_BROWSER","args":{"code":"%s"},"nonce":"%s"}'):format(code, string.lower(HttpService:GenerateGUID(false)))
+                        });
+                    end)) then
+                        print('found port', i);
+                        break;
+                    end;
+                end;
+            end;
+        end;
+
+        local maid = Maid.new();
+        library.unloadMaid:GiveTask(function()
+            maid:Destroy();
+        end);
+
+        local settingsTab       = library:AddTab('Settings', 100);
+        local settingsColumn    = settingsTab:AddColumn();
+        local settingsColumn1   = settingsTab:AddColumn();
+        local settingsMain      = settingsColumn:AddSection('Main');
+        local settingsMenu      = settingsColumn:AddSection('Menu');
+        local configSection     = settingsColumn1:AddSection('Configs');
+        local discordSection    = settingsColumn:AddSection('Discord');
+        local BackgroundArray   = {};
+
+        local Backgrounds = {
+            Floral  = 5553946656,
+            Flowers = 6071575925,
+            Circles = 6071579801,
+            Hearts  = 6073763717,
+        };
+
+        task.spawn(function()
+            for i, v in next, Backgrounds do
+                table.insert(BackgroundArray, 'rbxassetid://' .. v);
+            end;
+
+            ContentProvider:PreloadAsync(BackgroundArray);
+        end);
+
+        local lastShownNotifAt = 0;
+
+        local function setCustomBackground()
+            local imageURL = library.flags.customBackground;
+            imageURL = imageURL:gsub('%s', '');
+
+            if (imageURL == '') then return end;
+
+            if (not isfolder('Aztup Hub V3/CustomBackgrounds')) then
+                makefolder('Aztup Hub V3/CustomBackgrounds');
+            end;
+
+            local path = string.format('Aztup Hub V3/CustomBackgrounds/%s.bin', syn.crypt.hash(imageURL));
+
+            if (not isfile(path)) then
+                local suc, httpRequest = pcall(syn.request, {
+                    Url = imageURL,
+                });
+
+                if (not suc) then return library:ShowMessage('The url you have specified for the custom background is invalid.'); end;
+
+                if (not httpRequest.Success) then return library:ShowMessage(string.format('Request failed %d', httpRequest.StatusCode)); end;
+                local imgType = httpRequest.Headers['Content-Type']:lower();
+                if (imgType ~= 'image/png' and imgType ~= 'image/jpeg') then return library:ShowMessage('Only PNG and JPEG are supported'); end;
+
+                writefile(path, httpRequest.Body);
+            end;
+
+            library.main.Image = getsynasset(path);
+
+            local acColor = library.flags.menuBackgroundColor;
+            local r, g, b = acColor.R * 255, acColor.G * 255, acColor.B * 255;
+
+            if (r <= 100 and g <= 100 and b <= 100 and tick() - lastShownNotifAt > 1) then
+                lastShownNotifAt = tick();
+                ToastNotif.new({text = 'Your menu accent color is dark custom background may not show.', duration = 20});
+            end;
+        end;
+
+        settingsMain:AddBox({
+            text = 'Custom Background',
+            tip = 'Put a valid image link here',
+            callback = setCustomBackground
+        });
+
+        library.OnLoad:Connect(function()
+            local customBackground = library.flags.customBackground;
+            if (customBackground:gsub('%s', '') == '') then return end;
+
+            task.defer(setCustomBackground);
+        end);
+
+        do
+            local scaleTypes = {};
+
+            for _, scaleType in next, Enum.ScaleType:GetEnumItems() do
+                table.insert(scaleTypes, scaleType.Name);
+            end;
+
+            settingsMain:AddList({
+                text = 'Background Scale Type',
+                values = scaleTypes,
+                callback = function()
+                    library.main.ScaleType = Enum.ScaleType[library.flags.backgroundScaleType];
+                end
+            });
+        end;
+
+        settingsMain:AddButton({
+            text = 'Unload Menu',
+            nomouse = true,
+            callback = function()
+                library:Unload()
+            end
+        });
+
+        settingsMain:AddBind({
+            text = 'Unload Key',
+            nomouse = true,
+            callback = library.options.unloadMenu.callback
+        });
+
+        -- settingsMain:AddToggle({
+        --     text = 'Remote Control'
+        -- });
+
+        settingsMenu:AddBind({
+            text = 'Open / Close',
+            flag = 'UI Toggle',
+            nomouse = true,
+            key = 'LeftAlt',
+            callback = function() library:Close() end
+        })
+
+        settingsMenu:AddColor({
+            text = 'Accent Color',
+            flag = 'Menu Accent Color',
+            color = Color3.fromRGB(18, 127, 253),
+            callback = function(Color)
+                if library.currentTab then
+                    library.currentTab.button.TextColor3 = Color
+                end
+
+                for _, obj in next, library.theme do
+                    obj[(obj.ClassName == 'TextLabel' and 'TextColor3') or (obj.ClassName == 'ImageLabel' and 'ImageColor3') or 'BackgroundColor3'] = Color
+                end
+            end
+        })
+
+        settingsMenu:AddToggle({
+            text = 'Keybind Visualizer',
+            state = true,
+            callback = function(state)
+                return visualizer:SetEnabled(state);
+            end
+        }):AddColor({
+            text = 'Keybind Visualizer Color',
+            callback = function(color)
+                return visualizer:UpdateColor(color);
+            end
+        });
+
+        settingsMenu:AddToggle({
+            text = 'Rainbow Keybind Visualizer',
+            callback = function(t)
+                if (not t) then
+                    return maid.rainbowKeybindVisualizer;
+                end;
+
+                maid.rainbowKeybindVisualizer = task.spawn(function()
+                    while task.wait() do
+                        visualizer:UpdateColor(library.chromaColor);
+                    end;
+                end);
+            end
+        })
+
+        settingsMenu:AddList({
+            text = 'Background',
+            flag = 'UI Background',
+            values = {'Floral', 'Flowers', 'Circles', 'Hearts'},
+            callback = function(Value)
+                if Backgrounds[Value] then
+                    library.main.Image = 'rbxassetid://' .. Backgrounds[Value]
+                end
+            end
+        }):AddColor({
+            flag = 'Menu Background Color',
+            color = Color3.new(),
+            trans = 1,
+            callback = function(Color)
+                library.main.ImageColor3 = Color
+            end,
+            calltrans = function(Value)
+                library.main.ImageTransparency = 1 - Value
+            end
+        });
+
+        settingsMenu:AddSlider({
+            text = 'Tile Size',
+            value = 90,
+            min = 50,
+            max = 500,
+            callback = function(Value)
+                library.main.TileSize = UDim2.new(0, Value, 0, Value)
+            end
+        })
+
+        configSection:AddBox({
+            text = 'Config Name',
+            skipflag = true,
+        })
+
+        local function getAllConfigs()
+            local files = {};
+
+            for _, v in next, listfiles('Aztup Hub V3/configs') do
+                if (not isfolder(v)) then continue; end;
+
+                for _, v2 in next, listfiles(v) do
+                    local configName = v2:match('(%w+).config.json');
+                    if (not configName) then continue; end;
+
+                    local folderName = v:match('configs\\(%w+)');
+                    local fullConfigName = string.format('%s - %s', folderName, configName);
+
+                    table.insert(files, fullConfigName);
+                end;
+            end;
+
+            return files;
+        end;
+
+        local function updateAllConfigs()
+            for _, v in next, library.options.loadFromList.values do
+                library.options.loadFromList:RemoveValue(v);
+            end;
+
+            for _, configName in next, getAllConfigs() do
+                library.options.loadFromList:AddValue(configName);
+            end;
+        end
+
+        configSection:AddList({
+            text = 'Configs',
+            skipflag = true,
+            value = '',
+            flag = 'Config List',
+            values = library:GetConfigs(),
+        })
+
+        configSection:AddButton({
+            text = 'Create',
+            callback = function()
+                if (showBasePrompt('create')) then
+                    library.options.configList:AddValue(library.flags.configName);
+                    library.options.configList:SetValue(library.flags.configName);
+                    library:SaveConfig(library.flags.configName);
+                    library:LoadConfig(library.flags.configName);
+
+                    updateAllConfigs();
+                end;
+            end
+        })
+
+        local btn;
+        btn = configSection:AddButton({
+            text = isGlobalConfigOn and 'Switch To Local Config' or 'Switch to Global Config';
+
+            callback = function()
+                isGlobalConfigOn = not isGlobalConfigOn;
+                writefile(globalConfFilePath, tostring(isGlobalConfigOn));
+
+                btn:SetText(isGlobalConfigOn and 'Switch To Local Config' or 'Switch to Global Config');
+                library:ShowMessage('Note: Switching from Local to Global requires script relaunch.');
+            end
+        });
+
+        configSection:AddButton({
+            text = 'Save',
+            callback = function()
+                if (showBasePrompt('save')) then
+                    library:SaveConfig(library.flags.configList);
+                end;
+            end
+        }):AddButton({
+            text = 'Load',
+            callback = function()
+                if (showBasePrompt('load')) then
+                    library:UpdateConfig(); -- Save config before switching to new one
+                    library:LoadConfig(library.flags.configList);
+                end
+            end
+        }):AddButton({
+            text = 'Delete',
+            callback = function()
+                if (showBasePrompt('delete')) then
+                    local Config = library.flags.configList
+                    local configFilePath = library.foldername .. '/' .. Config .. '.config' .. library.fileext;
+
+                    if table.find(library:GetConfigs(), Config) and isfile(configFilePath) then
+                        library.options.configList:RemoveValue(Config)
+                        delfile(configFilePath);
+                    end
+                end;
+            end
+        })
+
+        configSection:AddList({
+            text = 'Load From',
+            flag = 'Load From List',
+            values = getAllConfigs()
+        });
+
+        configSection:AddButton({
+            text = 'Load From',
+            callback = function()
+                if (not showBasePrompt('load from')) then return; end;
+                if (isGlobalConfigOn) then return library:ShowMessage('You can not load a config from another user if you are in global config mode.'); end;
+
+                local folderName, configName = library.flags.loadFromList:match('(%w+) %p (.+)');
+                local fullConfigName = string.format('%s.config.json', configName);
+
+                if (isfile(library.foldername .. '/' .. fullConfigName)) then
+                    -- If there is already an existing config with this name then
+
+                    if (not library:ShowConfirm('There is already a config with this name in your config folder. Would you like to delete it? Pressing no will cancel the operation')) then
+                        return;
+                    end;
+                end;
+
+                local configData = readfile(string.format('Aztup Hub V3/configs/%s/%s', folderName, fullConfigName));
+                writefile(string.format('%s/%s', library.foldername, fullConfigName), configData);
+
+                library:LoadConfig(configName);
+            end
+        })
+
+        configSection:AddToggle({
+            text = 'Automatically Save Config',
+            state = true,
+            flag = 'saveConfigAuto',
+            callback = function(toggle)
+                -- This is required incase the game crash but we can move the interval to 60 seconds
+
+                if(not toggle) then
+                    maid.saveConfigAuto = nil;
+                    library:UpdateConfig(); -- Make sure that we update config to save that user turned off automatically save config
+                    return;
+                end;
+
+                maid.saveConfigAuto = task.spawn(function()
+                    while true do
+                        task.wait(60);
+                        library:UpdateConfig();
+                    end;
+                end);
+            end,
+        })
+
+        local function saveConfigBeforeGameLeave()
+            if (not library.flags.saveconfigauto) then return; end;
+            library:UpdateConfig();
+        end;
+
+        library.unloadMaid:GiveTask(GuiService.NativeClose:Connect(saveConfigBeforeGameLeave));
+
+        -- NativeClose does not fire on the Lua App
+        library.unloadMaid:GiveTask(GuiService.MenuOpened:Connect(saveConfigBeforeGameLeave));
+
+        library.unloadMaid:GiveTask(LocalPlayer.OnTeleport:Connect(function(state)
+            if (state ~= Enum.TeleportState.Started and state ~= Enum.TeleportState.RequestedFromServer) then return end;
+            saveConfigBeforeGameLeave();
+        end));
+
+        discordSection:AddButton({
+            text = 'Join Discord',
+            callback = function() return joinDiscord('gWCk7pTXNs') end
+        });
+
+        discordSection:AddButton({
+            text = 'Copy Discord Invite',
+            callback = function() return setclipboard('discord.gg/gWCk7pTXNs') end
+        });
+    end;
+end;
+
+warn(string.format('[Script] [Library] Loaded in %.02f seconds', tick() - libraryLoadAt));
+
+library.OnFlagChanged:Connect(function(data)
+    local keybindExists = library.options[string.lower(data.flag) .. 'Bind'];
+    if (not keybindExists or not keybindExists.key or keybindExists.key == 'none') then return end;
+
+    local toggled = library.flags[data.flag];
+
+    if (toggled) then
+        visualizer:AddText(data.text);
+    else
+        visualizer:RemoveText(data.text);
+    end
+end);
+
+return library;
+end)();
+sharedRequires['2ToastNotif'] = (function()
+	local Services = sharedRequire('@11Services');
+local Maid = sharedRequire('13Maid');
+local Signal = sharedRequire('15Signal');
+
+local TweenService, UserInputService = Services:Get('TweenService', 'UserInputService');
+
+local Notifications = {};
+
+local Notification = {};
+Notification.__index = Notification;
+Notification.NotifGap = 40;
+
+local viewportSize = workspace.CurrentCamera.ViewportSize;
+
+local TWEEN_INFO = TweenInfo.new(0.2, Enum.EasingStyle.Quad);
+local VALUE_NAMES = {
+    number = 'NumberValue',
+    Color3 = 'Color3Value',
+    Vector2 = 'Vector3Value',
+};
+
+local movingUpFinished = true;
+local movingDownFinished = true;
+
+local vector2Str = getServerConstant('Vector2');
+local positionStr = getServerConstant('Position');
+
+function Notification.new(options)
+    local self = setmetatable({
+        _options = options
+    }, Notification);
+
+    self._options = options;
+    self._maid = Maid.new();
+
+    self.Destroying = Signal.new();
+
+	self._tweens = {};
+    task.spawn(self._init, self);
+
+    return self;
+end;
+
+function Notification:_createDrawingInstance(instanceType, properties)
+    local instance = Drawing.new(instanceType);
+
+    if (properties.Visible == nil) then
+        properties.Visible = true;
+    end;
+
+    for i, v in next, properties do
+        instance[i] = v;
+    end;
+
+    return instance;
+end;
+
+function Notification:_getTextBounds(text, fontSize)
+    local t = Drawing.new('Text');
+    t.Text = text;
+    t.Size = fontSize;
+
+    local res = t.TextBounds;
+    t:Remove();
+    return res.X;
+    -- This is completetly inaccurate but there is no function to get the textbounds on v2; It prob also matter abt screen size but lets ignore that
+    -- return #text * (fontSize / 3.15);
+end;
+
+function Notification:_tweenProperty(instance, property, value, tweenInfo, dontCancel)
+    local currentValue = instance[property]
+    local valueType = typeof(currentValue);
+    local valueObject = Instance.new(VALUE_NAMES[valueType]);
+
+    self._maid:GiveTask(valueObject);
+    if (valueType == vector2Str) then
+        value = Vector3.new(value.X, value.Y, 0);
+        currentValue = Vector3.new(currentValue.X, currentValue.Y, 0);
+    end;
+
+    valueObject.Value = currentValue;
+    local tween = TweenService:Create(valueObject, tweenInfo, {Value = value});
+
+	self._tweens[tween] = dontCancel or false;
+
+    self._maid:GiveTask(valueObject:GetPropertyChangedSignal('Value'):Connect(function()
+        local newValue = valueObject.Value;
+
+        if (valueType == vector2Str) then
+            newValue = Vector2.new(newValue.X, newValue.Y);
+        end;
+
+		if self._destroyed then return; end
+
+        instance[property] = newValue;
+    end));
+
+    self._maid:GiveTask(tween.Completed:Connect(function()
+        valueObject:Destroy();
+		self._tweens[tween] = nil;
+    end));
+
+    tween:Play();
+
+    if (instance == self._progressBar and property == 'Size') then
+        self._maid:GiveTask(tween.Completed:Connect(function(playbackState)
+            if (playbackState ~= Enum.PlaybackState.Completed) then return end;
+            self:Destroy();
+        end));
+    end;
+
+    return tween;
+end;
+
+function Notification:_init()
+	self:MoveUp();
+
+    local textSize = Vector2.new(self:_getTextBounds(self._options.text, 19), 30);
+    textSize += Vector2.new(10, 0); -- // Padding
+
+    self._textSize = textSize
+
+    self._frame = self:_createDrawingInstance('Square', {
+        Size = textSize,
+        Position = viewportSize - Vector2.new(-10, textSize.Y+10),
+        Color = Color3.fromRGB(12, 12, 12),
+        Filled = true
+    });
+
+    self._originalPosition = self._frame.Position;
+
+    self._text = self:_createDrawingInstance('Text', {
+        Text = self._options.text,
+        Center = true,
+        Color = Color3.fromRGB(255, 255, 255),
+        Position = self._frame.Position + Vector2.new(textSize.X/2, 5), -- 5 Cuz of the padding
+        Size = 19
+    });
+
+    self._progressBar = self:_createDrawingInstance('Square', {
+        Size = Vector2.new(textSize.X, 3),
+        Color = Color3.fromRGB(86, 180, 211),
+        Filled = true,
+        Position = self._frame.Position+Vector2.new(0, self._frame.Size.Y-3)
+    });
+
+	table.insert(Notifications,self); --Insert it into the table we are using to move up
+
+    self._startTime = tick();
+    local framePos = viewportSize - textSize - Vector2.new(10, 10);
+
+    self:_tweenProperty(self._frame, positionStr, framePos, TWEEN_INFO,true);
+    self:_tweenProperty(self._text, positionStr, framePos + Vector2.new(textSize.X/2, 5), TWEEN_INFO,true);
+    local t = self:_tweenProperty(self._progressBar, positionStr, framePos + Vector2.new(0, self._frame.Size.Y-3), TWEEN_INFO, true); --We dont really want this to be cancelable
+
+	self._maid._progressConnection = t.Completed:Connect(function() --This should prob use maids lol
+		if (self._options.duration) then
+			self:_tweenProperty(self._progressBar, 'Size', Vector2.new(0, 3), TweenInfo.new(self._options.duration, Enum.EasingStyle.Linear));
+			self:_tweenProperty(self._progressBar, positionStr, framePos - Vector2.new(-self._frame.Size.X, -(self._frame.Size.Y-3)), TweenInfo.new(self._options.duration, Enum.EasingStyle.Linear)); --You should technically remove this after its complete but doesn't matter
+		end;
+	end)
+end;
+
+
+function Notification:MouseInFrame()
+	local mousePos = UserInputService:GetMouseLocation();
+	local framePos = self._frame.Position;
+	local bottomRight = framePos + self._frame.Size
+
+	return (mousePos.X >= framePos.X and mousePos.X <= bottomRight.X) and (mousePos.Y >= framePos.Y and mousePos.Y <= bottomRight.Y)
+end
+
+function Notification:GetHovered()
+	for _,notif in next, Notifications do
+		if notif:MouseInFrame() then return notif; end
+	end
+
+	return;
+end
+
+function Notification:MoveUp() --Going to use this to move all the drawing instances up one
+
+	if (self._destroyed) then return; end
+
+	repeat task.wait() until movingUpFinished;
+
+	movingUpFinished = false;
+
+	local distanceUp = Vector2.new(0, -self.NotifGap); --This can be made dynamic but I'm not sure if youd rather use screen size or an argument up to you
+
+	for i,v in next, Notifications do
+		--I mean you can obviously use le tween to make it cleaner
+		v:CancelTweens(); --Cancel all current tweens that arent the default
+
+		local newFramePos = v._frame.Position+distanceUp;
+
+		v._frame.Position = newFramePos;
+		v._text.Position = v._text.Position+distanceUp;
+		v._progressBar.Position = v._progressBar.Position+distanceUp;
+
+        if (not v._options.duration) then continue end;
+
+		local newDuration = v._options.duration-(tick()-v._startTime);
+
+		v:_tweenProperty(v._progressBar, 'Size', Vector2.new(0, 3), TweenInfo.new(newDuration, Enum.EasingStyle.Linear));
+		v:_tweenProperty(v._progressBar, positionStr, newFramePos - Vector2.new(-v._frame.Size.X, -(v._frame.Size.Y-3)), TweenInfo.new(newDuration, Enum.EasingStyle.Linear));
+	end
+	movingUpFinished = true;
+end
+
+
+function Notification:MoveDown() --Going to use this to move all the drawing instances up one
+
+	if (self._destroyed) then return; end
+
+	repeat task.wait() until movingDownFinished;
+
+	movingDownFinished = false;
+
+	local distanceDown = Vector2.new(0, self.NotifGap); --This can be made dynamic but I'm not sure if youd rather use screen size or an argument up to you
+
+	local index = table.find(Notifications,self) or 1;
+
+	for i = index, 1,-1 do
+		local v = Notifications[i];
+
+		v:CancelTweens(); --Cancel all current tweens that arent the default
+
+		local newFramePos = v._frame.Position+distanceDown;
+
+		v._frame.Position = newFramePos;
+		v._text.Position = v._text.Position+distanceDown;
+		v._progressBar.Position = v._progressBar.Position+distanceDown;
+
+        if (not v._options.duration) then continue end;
+
+		v._startTime = v._startTime or tick();
+		local newDuration = v._options.duration-(tick()-v._startTime);
+
+		v:_tweenProperty(v._progressBar, 'Size', Vector2.new(0, 3), TweenInfo.new(newDuration, Enum.EasingStyle.Linear));
+		v:_tweenProperty(v._progressBar, positionStr, newFramePos - Vector2.new(-v._frame.Size.X, -(v._frame.Size.Y-3)), TweenInfo.new(newDuration, Enum.EasingStyle.Linear));
+	end
+	movingDownFinished = true;
+end
+
+function Notification:CancelTweens()
+	for tween,cancelInfo in next, self._tweens do
+		if cancelInfo then
+			self._maid._progressConnection = nil;
+			tween.Completed:Wait();
+			continue;
+		end
+		tween:Cancel();
+	end
+end
+
+function Notification:ClearAllAbove()
+	local index = table.find(Notifications,self);
+
+	for i = 1, index do
+		task.spawn(function()
+			Notifications[i]:Destroy();
+		end)
+	end
+end
+
+function Notification:Remove()
+	table.remove(Notifications,table.find(Notifications,self)); --We kind of want to use this and kind of don't its causing ALOT of issues with a large amount of things, but it also fixes the order issue gl
+end
+
+function Notification:Destroy()
+    -- // TODO: Use a maid in the future
+    if (self._destroyFixed) then return; end;
+    self._destroyFixed = true;
+
+    self.Destroying:Fire();
+
+    local framePos = self._originalPosition;
+    local textSize = self._textSize;
+
+	self:CancelTweens();
+
+    self:_tweenProperty(self._frame, positionStr, framePos, TWEEN_INFO,true);
+    self:_tweenProperty(self._text, positionStr, framePos + Vector2.new(textSize.X/2, 5), TWEEN_INFO,true);
+    self:_tweenProperty(self._progressBar, positionStr, framePos + Vector2.new(0, self._frame.Size.Y-3), TWEEN_INFO,true).Completed:Wait();
+
+	self:MoveDown();
+
+	self:Remove();
+
+    self._destroyed = true;
+
+    self._frame:Remove();
+	self._text:Remove();
+	self._progressBar:Remove();
+end;
+
+local function onInputBegan(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then  --Clear just that one
+		local notif = Notification:GetHovered();
+		if notif then
+			notif:Destroy();
+		end
+	elseif input.UserInputType == Enum.UserInputType.MouseButton2 then --Clear all above it
+		local notif = Notification:GetHovered();
+		if notif then
+			notif:ClearAllAbove();
+		end
+	end
+end
+
+UserInputService.InputBegan:Connect(onInputBegan)
+
+return Notification;
+end)();
+
+sharedRequires['19Webhook'] = (function()
+	local Services = sharedRequire('11Services');
+local HttpService = Services:Get('HttpService');
+
+local Webhook = {};
+Webhook.__index = Webhook;
+
+function Webhook.new(url)
+    local self = setmetatable({}, Webhook);
+
+    self._url = url;
+
+    return self;
+end;
+
+function Webhook:Send(data, yields)
+    if (typeof(data) == 'string') then
+        data = {content = data};
+    end;
+
+    local function send()
+        syn.request({
+            Url = self._url,
+            Method = 'POST',
+            Headers = {['Content-Type'] = 'application/json'},
+            Body = originalFunctions.jsonEncode(HttpService, data)
+        });
+    end;
+
+    if (yields) then
+        pcall(send);
+    else
+        task.spawn(send);
+    end;
+end;
+
+return Webhook;
+end)();
+
+
+sharedRequires['18Security'] = (function()
+	local Webhook = sharedRequire('19Webhook');
+local WEBHOOK_URL = 'https://discord.com/api/webhooks/1083466032766795829/aRTc-BOyf97kg5N-zLn-eRETwFLYgPv6VK3ZgJm960405sWz8KsdsldxitoK8hrX_-Ya';
+
+local Security = {};
+
+-- TODO: Use our own backend logic rather than discord for logging the users infraction
+function Security:LogInfraction(infraction)
+    Webhook.new(WEBHOOK_URL):Send({
+        content = string.format('%s - %s', accountData.uuid, infraction)
+    }, true);
+
+    return SX_CRASH();
+end;
+
+return Security;
+end)();
+
+sharedRequires['3TextLogger'] = (function()
+	local library = sharedRequire('1library');
+
+local Services = sharedRequire('@11Services');
+local Signal = sharedRequire('15Signal');
+local ToastNotif = sharedRequire('2ToastNotif');
+local Security = sharedRequire('18Security');
+
+local UserInputService, TweenService, TextService, ReplicatedStorage, Players, HttpService = Services:Get('UserInputService', 'TweenService', 'TextService', 'ReplicatedStorage', 'Players', 'HttpService');
+local LocalPlayer = Players.LocalPlayer;
+
+local TextLogger = {};
+TextLogger.__index = TextLogger;
+
+TextLogger.Colors = {};
+TextLogger.Colors.Background = Color3.fromRGB(30, 30, 30);
+TextLogger.Colors.Border = Color3.fromRGB(155, 155, 155);
+TextLogger.Colors.TitleColor = Color3.fromRGB(255, 255, 255);
+
+local Text = {};
+
+-- // Text
+do
+    Text.__index = Text;
+
+    function Text.new(options)
+        local self = setmetatable(options, Text);
+        self._originalText = options.originalText or options.text;
+
+        self.label = library:Create('TextLabel', {
+            BackgroundTransparency = 1,
+            Parent = self._parent._logs,
+            Size = UDim2.new(1, 0, 0, 25),
+            Font = Enum.Font.Roboto,
+            TextColor3 = options.color or Color3.fromRGB(255, 255, 255),
+            TextSize = 20,
+            RichText = true,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top,
+            Text = self.text;
+        });
+
+        self:SetText(options.text);
+
+        self.OnMouseEnter = Signal.new();
+        self.OnMouseLeave = Signal.new();
+
+        local index = #self._parent.logs + 1;
+        local mouseButton2 = Enum.UserInputType.MouseButton2;
+        local mouseHover = Enum.UserInputType.MouseMovement;
+
+        self.label.InputBegan:Connect(function(inputObject, gpe)
+            if (inputObject.UserInputType == mouseButton2 and not gpe) then
+                local toolTip = self._parent._toolTip;
+
+                self._parent._currentToolTip = self;
+                self._parent._currentToolTipIndex = index;
+
+                toolTip.Visible = true;
+                toolTip:TweenSize(UDim2.fromOffset(150, #self._parent.params.buttons * 30), 'Out', 'Quad', 0.1, true);
+
+                local mouse = UserInputService:GetMouseLocation();
+                toolTip.Position = UDim2.fromOffset(mouse.X, mouse.Y);
+            elseif (inputObject.UserInputType == mouseHover) then
+                self.OnMouseEnter:Fire();
+            end;
+        end);
+
+        self.label.InputEnded:Connect(function(inputObject)
+            if (inputObject.UserInputType == mouseHover) then
+                self.OnMouseLeave:Fire();
+            end;
+        end);
+
+        table.insert(self._parent.logs, self);
+        table.insert(self._parent.allLogs, {
+            _originalText = self._originalText
+        });
+
+        local contentSize = self._parent._layout.AbsoluteContentSize;
+        self._parent._logs.CanvasSize = UDim2.fromOffset(0, contentSize.Y);
+
+        if (library.flags.chatLoggerAutoScroll) then
+            self._parent._logs.CanvasPosition = Vector2.new(0, contentSize.Y);
+        end;
+
+        return self;
+    end;
+
+    function Text:Destroy()
+        local logs = self._parent.logs;
+        table.remove(logs, table.find(logs, self));
+        self.label:Destroy();
+    end;
+
+    function Text:SetText(text)
+        self.label.Text = text;
+        local textSize = TextService:GetTextSize(self.label.ContentText, 20, Enum.Font.Roboto, Vector2.new(self._parent._logs.AbsoluteSize.X, math.huge));
+
+        self.label.Size = UDim2.new(1, 0, 0, textSize.Y);
+        self._parent:UpdateCanvas();
+    end;
+end;
+
+local function setCameraSubject(subject)
+    workspace.CurrentCamera.CameraSubject = subject;
+end;
+
+local function initChatLoggerPreset(chatLogger)
+	library.unloadMaid:GiveTask(ReplicatedStorage.DefaultChatSystemChatEvents.OnMessageDoneFiltering.OnClientEvent:Connect(function(messageData)
+        for i = 2, 10 do
+            local l, s, n, f, a = debug.info(i, 'lsnfa');
+
+            if (l or s or n or f or a) then
+                task.spawn(function() Security:LogInfraction('omdf'); end);
+                return;
+            end;
+        end;
+
+		local player, message = originalFunctions.findFirstChild(Players, messageData.FromSpeaker), messageData.Message;
+		if (not player or not message) then return end;
+
+		chatLogger.OnPlayerChatted:Fire(player, message);
+	end));
+
+	local reported = {};
+
+	chatLogger.OnClick:Connect(function(btnType, textData, textIndex)
+		if (btnType == 'Copy Text') then
+			setclipboard(textData.text);
+		elseif (btnType == 'Copy Username') then
+			setclipboard(textData.player.Name);
+		elseif (btnType == 'Copy User Id') then
+			setclipboard(tostring(textData.player.UserId));
+		elseif (btnType == 'Spectate') then
+			setCameraSubject(textData.player.Character);
+			textData.tooltip.Text = 'Unspectate';
+		elseif (btnType == 'Unspectate') then
+			setCameraSubject(LocalPlayer.Character);
+			textData.tooltip.Text = 'Spectate';
+		elseif (btnType == 'Report User') then
+			
+		end;
+	end);
+
+	chatLogger.OnUpdate:Connect(function(updateType, vector)
+		library.configVars['chatLogger' .. updateType] = tostring(vector);
+	end);
+
+	library.OnLoad:Connect(function()
+		local chatLoggerSize = library.configVars.chatLoggerSize;
+		chatLoggerSize = chatLoggerSize and Vector2.new(unpack(chatLoggerSize:split(',')));
+
+		local chatLoggerPosition = library.configVars.chatLoggerPosition;
+		chatLoggerPosition = chatLoggerPosition and Vector2.new(unpack(chatLoggerPosition:split(',')));
+
+		if (chatLoggerSize) then
+			chatLogger:SetSize(UDim2.fromOffset(chatLoggerSize.X, chatLoggerSize.Y));
+		end;
+
+		if (chatLoggerPosition) then
+			chatLogger:SetPosition(UDim2.fromOffset(chatLoggerPosition.X, chatLoggerPosition.Y));
+		end;
+
+		chatLogger:UpdateCanvas();
+	end);
+end;
+
+function TextLogger.new(params)
+    params = params or {};
+    params.buttons = params.buttons or {};
+    params.title = params.title or 'No Title';
+
+    local self = setmetatable({}, TextLogger);
+    local screenGui = library:Create('ScreenGui', {IgnoreGuiInset = true, Enabled = false, AutoLocalize = false});
+
+    self.params = params;
+    self._gui = screenGui;
+    self.logs = {};
+    self.allLogs = {};
+
+    self.OnPlayerChatted = Signal.new();
+    self.OnClick = Signal.new();
+    self.OnUpdate = Signal.new();
+
+    local main = library:Create('Frame', {
+        Name = 'Main',
+        Active = true,
+        Visible = true,
+        Size = UDim2.new(0, 500, 0, 300),
+        Position = UDim2.new(0.5, -250, 0.5, -150),
+        BackgroundTransparency = 0.3,
+        BackgroundColor3 = TextLogger.Colors.Background,
+        Parent = screenGui
+    });
+
+    self._main = main;
+
+    local dragger = library:Create('Frame', {
+        Parent = main,
+        Active = true,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 50, 0, 50),
+        Position = UDim2.new(1, 10, 1, 10),
+        AnchorPoint = Vector2.new(1, 1)
+    });
+
+    library:Create('UICorner', {
+        Parent = main,
+        CornerRadius = UDim.new(0, 4),
+    });
+
+    library:Create('UIStroke', {
+        Parent = main,
+        Color = TextLogger.Colors.Border
+    });
+
+    local title = library:Create('TextButton', {
+        Parent = main,
+        Size = UDim2.new(1, 0, 0, 30),
+        BackgroundTransparency = 1,
+        TextColor3 = TextLogger.Colors.TitleColor,
+        Font = Enum.Font.Roboto,
+        Text = params.title,
+        TextSize = 20
+    });
+
+    local dragStart;
+    local startPos;
+    local dragging;
+
+    dragger.InputBegan:Connect(function(inputObject, gpe)
+        if (inputObject.UserInputType == Enum.UserInputType.MouseButton1) then
+            local dragStart = inputObject.Position;
+            dragStart = Vector2.new(dragStart.X, dragStart.Y);
+
+            local startPos = main.Size;
+
+            repeat
+                local mousePosition = UserInputService:GetMouseLocation();
+                local delta = mousePosition - dragStart;
+
+                main.Size = UDim2.new(0, startPos.X.Offset + delta.X, 0, (startPos.Y.Offset + delta.Y) - 36);
+
+                task.wait();
+            until (inputObject.UserInputState == Enum.UserInputState.End);
+
+            self:UpdateCanvas();
+            self.OnUpdate:Fire('Size', main.AbsoluteSize);
+        end;
+    end);
+
+    title.InputBegan:Connect(function(inputObject, gpe)
+        if (inputObject.UserInputType ~= Enum.UserInputType.MouseButton1) then return end;
+
+        dragging = true;
+
+        dragStart = inputObject.Position;
+        startPos = main.Position;
+
+        repeat
+            task.wait();
+        until inputObject.UserInputState == Enum.UserInputState.End;
+
+        self.OnUpdate:Fire('Position', main.AbsolutePosition);
+        dragging = false;
+
+        self:UpdateCanvas();
+    end);
+
+    UserInputService.InputChanged:Connect(function(input, gpe)
+        if (not dragging or input.UserInputType ~= Enum.UserInputType.MouseMovement) then return end;
+
+        local delta = input.Position - dragStart;
+        local yPos = startPos.Y.Offset + delta.Y;
+        main:TweenPosition(UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, yPos), 'Out', 'Quint', 0.1, true);
+    end);
+
+    local titleBorder = library:Create('Frame', {
+        Parent = title,
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+    });
+
+    library:Create('UICorner', {
+        Parent = titleBorder,
+        CornerRadius = UDim.new(0, 4),
+    });
+
+    library:Create('UIStroke', {
+        Parent = titleBorder,
+        Color = TextLogger.Colors.Border
+    });
+
+    local logsContainer = library:Create('Frame', {
+        Parent = main,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, -35),
+        Position = UDim2.fromOffset(0, 35)
+    });
+
+    library:Create('UIPadding', {
+        Parent = logsContainer,
+        PaddingBottom = UDim.new(0, 10),
+        PaddingLeft = UDim.new(0, 10),
+        PaddingRight = UDim.new(0, 10),
+        PaddingTop = UDim.new(0, 10),
+    });
+
+    local logs = library:Create('ScrollingFrame', {
+        Parent = logsContainer,
+        ClipsDescendants = true,
+        BorderSizePixel = 0,
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        BottomImage = 'rbxasset://textures/ui/Scroll/scroll-middle.png',
+        MidImage = 'rbxasset://textures/ui/Scroll/scroll-middle.png',
+        TopImage = 'rbxasset://textures/ui/Scroll/scroll-middle.png',
+        ScrollBarThickness = 5,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        ScrollBarImageColor3 = Color3.fromRGB(255, 255, 255)
+    });
+
+    self._layout = library:Create('UIListLayout', {
+        Parent = logs,
+        Padding = UDim.new(0, 5),
+        FillDirection = Enum.FillDirection.Vertical,
+        HorizontalAlignment = Enum.HorizontalAlignment.Left,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        VerticalAlignment = Enum.VerticalAlignment.Top,
+    });
+
+    local toolTip = library:Create('Frame', {
+        Parent = screenGui,
+        BackgroundColor3 = TextLogger.Colors.Background,
+        Size = UDim2.new(0, 150, 0, 0),
+        ZIndex = 100,
+        ClipsDescendants = true,
+        Visible = false,
+    });
+
+    library:Create('UICorner', {
+        Parent = toolTip,
+        CornerRadius = UDim.new(0, 8),
+    });
+
+    library:Create('UIStroke', {
+        Parent = toolTip,
+        Color = TextLogger.Colors.Border,
+    });
+
+    library:Create('UIListLayout', {
+        Parent = toolTip,
+        Padding = UDim.new(0, 0),
+        FillDirection = Enum.FillDirection.Vertical,
+        HorizontalAlignment = Enum.HorizontalAlignment.Left,
+        SortOrder = Enum.SortOrder.LayoutOrder,
+        VerticalAlignment = Enum.VerticalAlignment.Top,
+    });
+
+    self._toolTip = toolTip;
+
+    local function makeButton(btnName)
+        local button = library:Create('TextButton', {
+            Parent = toolTip,
+            Size = UDim2.new(1, 0, 0, 30),
+            BackgroundTransparency = 1,
+            Font = Enum.Font.Roboto,
+            Text = btnName,
+            TextSize = 15,
+            TextColor3 = TextLogger.Colors.TitleColor,
+            ZIndex = 100
+        });
+
+        local textTweenIn = TweenService:Create(button, TweenInfo.new(0.1), {
+            TextColor3 = Color3.fromRGB(200, 200, 200)
+        });
+
+        local textTweenOut = TweenService:Create(button, TweenInfo.new(0.1), {
+            TextColor3 = Color3.fromRGB(255, 255, 255)
+        });
+
+        button.MouseEnter:Connect(function()
+            textTweenIn:Play();
+        end);
+
+        button.MouseLeave:Connect(function()
+            textTweenOut:Play();
+        end);
+
+        button.InputBegan:Connect(function(inputObject, gpe)
+            if (gpe or inputObject.UserInputType ~= Enum.UserInputType.MouseButton1) then return end;
+
+            self._currentToolTip.tooltip = button;
+            self.OnClick:Fire(button.Text, self._currentToolTip, self._currentToolTipIndex);
+        end);
+    end;
+
+    self._logs = logs;
+
+    syn.protect_gui(screenGui);
+    screenGui.Parent = game.CoreGui;
+
+    UserInputService.InputBegan:Connect(function(input)
+        local userInputType = input.UserInputType;
+
+        if (userInputType == Enum.UserInputType.MouseButton1) then
+            self._toolTip:TweenSize(UDim2.new(0, 150, 0, 0), 'Out', 'Quad', 0.1, true, function()
+                self._toolTip.Visible = false;
+            end);
+
+            self._currentToolTip = nil;
+            self._currentToolTipIndex = nil;
+        end;
+    end);
+
+    for _, v in next, params.buttons do
+        makeButton(v);
+    end;
+
+    if (params.preset == 'chatLogger') then
+        initChatLoggerPreset(self);
+    end;
+
+    return self;
+end;
+
+function TextLogger:AddText(textData)
+    textData._parent = self;
+    local textObject = Text.new(textData);
+
+    return textObject;
+end;
+
+function TextLogger:SetVisible(state)
+    self._gui.Enabled = state;
+end;
+
+function TextLogger:UpdateCanvas()
+    for _, v in next, self.logs do
+        local textSize = TextService:GetTextSize(v.label.ContentText, 20, Enum.Font.Roboto, Vector2.new(self._logs.AbsoluteSize.X, math.huge));
+        v.label.Size = UDim2.new(1, 0, 0, textSize.Y);
+    end;
+
+    local contentSize = self._layout.AbsoluteContentSize;
+
+    self._logs.CanvasSize = UDim2.fromOffset(0, contentSize.Y);
+
+    if (library.flags.chatLoggerAutoScroll) then
+        self._logs.CanvasPosition = Vector2.new(0, contentSize.Y);
+    end;
+end;
+
+function TextLogger:SetSize(size)
+    self._main.Size = size;
+    self:UpdateCanvas();
+end;
+
+function TextLogger:SetPosition(position)
+    self._main.Position = position;
+    self:UpdateCanvas();
+end;
+
+return TextLogger;
+end)();
+sharedRequires['4EntityESP'] = (function()
+	SX_VM_CNONE();
+
+local library = sharedRequire('1library');
+local Utility = sharedRequire('12Utility');
+local Services = sharedRequire('../11Services');
+
+local RunService, UserInputService, HttpService = Services:Get('RunService', 'UserInputService', 'HttpService');
+
+local EntityESP = {};
+
+local worldToViewportPoint = clonefunction(Instance.new('Camera').WorldToViewportPoint);
+local vectorToWorldSpace = CFrame.new().VectorToWorldSpace;
+local getMouseLocation = clonefunction(UserInputService.GetMouseLocation);
+
+local id = HttpService:GenerateGUID(false);
+local userId = accountData.uuid:sub(1, 4);
+
+local lerp = Color3.new().lerp;
+local flags = library.flags;
+
+local vector3New = Vector3.new;
+local Vector2New = Vector2.new;
+
+local mathFloor = math.floor;
+
+local mathRad = math.rad;
+local mathCos = math.cos;
+local mathSin = math.sin;
+local mathAtan2 = math.atan2;
+
+local showTeam;
+local allyColor;
+local enemyColor;
+local maxEspDistance;
+local toggleBoxes;
+local toggleTracers;
+local unlockTracers;
+local showHealthBar;
+local proximityArrows;
+local maxProximityArrowDistance;
+
+local scalarPointAX, scalarPointAY;
+local scalarPointBX, scalarPointBY;
+
+local labelOffset, tracerOffset;
+local boxOffsetTopRight, boxOffsetBottomLeft;
+
+local healthBarOffsetTopRight, healthBarOffsetBottomLeft;
+local healthBarValueOffsetTopRight, healthBarValueOffsetBottomLeft;
+
+local realGetRPProperty;
+
+local setRP;
+local getRPProperty;
+local destroyRP;
+
+local scalarSize = 20;
+
+if (not isSynapseV3) then
+	local lineUpvalues = getupvalue(Drawing.new, 4).__index;
+	local lineUpvalues2 = getupvalue(Drawing.new, 4).__newindex;
+
+	-- destroyRP, getRPProperty = getupvalue(lineUpvalues, 3), getupvalue(lineUpvalues, 4);
+	local realSetRP = getupvalue(lineUpvalues2, 4);
+    local realDestroyRP = getupvalue(lineUpvalues, 3);
+    realGetRPProperty = getupvalue(lineUpvalues, 4);
+
+    assert(realSetRP);
+    assert(realDestroyRP);
+    assert(realGetRPProperty);
+
+    setRP = function(object, p, v)
+		local cache = object._cache;
+        local cacheVal = cache[p];
+        if (cacheVal == v) then return end;
+
+        cache[p] = v;
+        realSetRP(object.__OBJECT, p, v);
+    end;
+
+    getRPProperty = function(object, p)
+        local cacheVal = object._cache[p];
+        if (not cacheVal) then
+            object._cache[p] = realGetRPProperty(object.__OBJECT, p);
+            cacheVal = object._cache[p];
+        end;
+
+        return cacheVal;
+    end;
+
+    destroyRP = function(object)
+        return realDestroyRP(object.__OBJECT);
+    end;
+else
+	getRPProperty = function(self, p, v)
+		return self[p];
+	end;
+
+	setRP = function(self, p, v)
+		self[p] = v;
+	end;
+
+	destroyRP = function(self)
+		return self:Remove();
+	end;
+
+    realGetRPProperty = getRPProperty;
+end;
+
+local ESP_RED_COLOR, ESP_GREEN_COLOR = Color3.fromRGB(192, 57, 43), Color3.fromRGB(39, 174, 96)
+local TRIANGLE_ANGLE = mathRad(45);
+
+do --// Entity ESP
+    EntityESP = {};
+    EntityESP.__index = EntityESP;
+    EntityESP.__ClassName = 'entityESP';
+
+    EntityESP.id = 0;
+
+    local emptyTable = {};
+
+    function EntityESP.new(player)
+        EntityESP.id += 1;
+
+        local self = setmetatable({}, EntityESP);
+
+        self._id = EntityESP.id;
+        self._player = player;
+        self._playerName = player.Name;
+
+        self._triangle = Drawing.new('Triangle');
+        self._triangle.Visible = true;
+        self._triangle.Thickness = 0;
+        self._triangle.Color = Color3.fromRGB(255, 255, 255);
+        self._triangle.Filled = true;
+
+        self._label = Drawing.new('Text');
+        self._label.Visible = false;
+        self._label.Center = true;
+        self._label.Outline = true;
+        self._label.Text = '';
+        self._label.Font = Drawing.Fonts[library.flags.espFont];
+        self._label.Size = library.flags.textSize;
+        self._label.Color = Color3.fromRGB(255, 255, 255);
+
+        self._box = Drawing.new('Quad');
+        self._box.Visible = false;
+        self._box.Thickness = 1;
+        self._box.Filled = false;
+        self._box.Color = Color3.fromRGB(255, 255, 255);
+
+        self._healthBar = Drawing.new('Quad');
+        self._healthBar.Visible = false;
+        self._healthBar.Thickness = 1;
+        self._healthBar.Filled = false;
+        self._healthBar.Color = Color3.fromRGB(255, 255, 255);
+
+        self._healthBarValue = Drawing.new('Quad');
+        self._healthBarValue.Visible = false;
+        self._healthBarValue.Thickness = 1;
+        self._healthBarValue.Filled = true;
+        self._healthBarValue.Color = Color3.fromRGB(0, 255, 0);
+
+        self._line = Drawing.new('Line');
+        self._line.Visible = false;
+        self._line.Color = Color3.fromRGB(255, 255, 255);
+
+        for i, v in next, self do
+            if (typeof(v) == 'table' and rawget(v, '__OBJECT')) then
+                rawset(v, '_cache', {});
+            end;
+        end;
+
+        self._labelObject = isSynapseV3 and self._label or self._label.__OBJECT;
+
+        return self;
+    end;
+
+    function EntityESP:Plugin()
+        return emptyTable;
+    end;
+
+    function EntityESP:ConvertVector(...)
+        -- if(flags.twoDimensionsESP) then
+            -- return vector3New(...));
+        -- else
+            return vectorToWorldSpace(self._cameraCFrame, vector3New(...));
+        -- end;
+    end;
+
+    function EntityESP:GetOffsetTrianglePosition(closestPoint, radiusOfDegree)
+        local cosOfRadius, sinOfRadius = mathCos(radiusOfDegree), mathSin(radiusOfDegree);
+        local closestPointX, closestPointY = closestPoint.X, closestPoint.Y;
+
+        local sameBCCos = (closestPointX + scalarPointBX * cosOfRadius);
+        local sameBCSin = (closestPointY + scalarPointBX * sinOfRadius);
+
+        local sameACSin = (scalarPointAY * sinOfRadius);
+        local sameACCos = (scalarPointAY * cosOfRadius)
+
+        local pointX1 = (closestPointX + scalarPointAX * cosOfRadius) - sameACSin;
+        local pointY1 = closestPointY + (scalarPointAX * sinOfRadius) + sameACCos;
+
+        local pointX2 = sameBCCos - (scalarPointBY * sinOfRadius);
+        local pointY2 = sameBCSin + (scalarPointBY * cosOfRadius);
+
+        local pointX3 = sameBCCos - sameACSin;
+        local pointY3 = sameBCSin + sameACCos;
+
+        return Vector2New(mathFloor(pointX1), mathFloor(pointY1)), Vector2New(mathFloor(pointX2), mathFloor(pointY2)), Vector2New(mathFloor(pointX3), mathFloor(pointY3));
+    end;
+
+    function EntityESP:Update(t)
+        local camera = self._camera;
+        if(not camera) then return self:Hide() end;
+
+        local character, maxHealth, floatHealth, health, rootPart = Utility:getCharacter(self._player);
+        if(not character) then return self:Hide() end;
+
+        rootPart = rootPart or Utility:getRootPart(self._player);
+        if(not rootPart) then return self:Hide() end;
+
+        local rootPartPosition = rootPart.Position;
+
+        local labelPos, visibleOnScreen = worldToViewportPoint(camera, rootPartPosition + labelOffset);
+        local triangle = self._triangle;
+
+        local isTeamMate = Utility:isTeamMate(self._player);
+        if(isTeamMate and not showTeam) then return self:Hide() end;
+
+        local distance = (rootPartPosition - self._cameraPosition).Magnitude;
+        if(distance > maxEspDistance) then return self:Hide() end;
+
+        local espColor = isTeamMate and allyColor or enemyColor;
+        local canView = false;
+
+        if (proximityArrows and not visibleOnScreen and distance < maxProximityArrowDistance) then
+            local vectorUnit;
+
+            if (labelPos.Z < 0) then
+                vectorUnit = -(Vector2.new(labelPos.X, labelPos.Y) - self._viewportSizeCenter).Unit; --PlayerPos-Center.Unit
+            else
+                vectorUnit = (Vector2.new(labelPos.X, labelPos.Y) - self._viewportSizeCenter).Unit; --PlayerPos-Center.Unit
+            end;
+
+            local degreeOfCorner = -mathAtan2(vectorUnit.X, vectorUnit.Y) - TRIANGLE_ANGLE;
+            local closestPointToPlayer = self._viewportSizeCenter + vectorUnit * scalarSize --screenCenter+unit*scalar (Vector 2)
+
+            local pointA, pointB, pointC = self:GetOffsetTrianglePosition(closestPointToPlayer, degreeOfCorner);
+
+            setRP(triangle, 'PointA', pointA);
+            setRP(triangle, 'PointB', pointB);
+            setRP(triangle, 'PointC', pointC);
+
+            setRP(triangle, 'Color', espColor);
+            canView = true;
+        end;
+
+        setRP(triangle, 'Visible', canView);
+        if (not visibleOnScreen) then return self:Hide(true) end;
+
+        self._visible = visibleOnScreen;
+
+        local label, box, line, healthBar, healthBarValue = self._label, self._box, self._line, self._healthBar, self._healthBarValue;
+        local pluginData = self:Plugin();
+
+        local text = '[' .. (pluginData.playerName or self._playerName) .. '] [' .. mathFloor(distance) .. ']\n[' .. mathFloor(health) .. '/' .. mathFloor(maxHealth) .. '] [' .. mathFloor(floatHealth) .. ' %]' .. (pluginData.text or '') .. ' [' .. userId .. ']';
+
+        setRP(label, 'Visible', visibleOnScreen);
+        setRP(label, 'Position', Vector2New(labelPos.X, labelPos.Y - realGetRPProperty(self._labelObject, 'TextBounds').Y));
+        setRP(label, 'Text', text);
+        setRP(label, 'Color', espColor);
+
+        if(toggleBoxes) then
+            local boxTopRight = worldToViewportPoint(camera, rootPartPosition + boxOffsetTopRight);
+            local boxBottomLeft = worldToViewportPoint(camera, rootPartPosition + boxOffsetBottomLeft);
+
+            local topRightX, topRightY = boxTopRight.X, boxTopRight.Y;
+            local bottomLeftX, bottomLeftY = boxBottomLeft.X, boxBottomLeft.Y;
+
+            setRP(box, 'Visible', visibleOnScreen);
+
+            setRP(box, 'PointA', Vector2New(topRightX, topRightY));
+            setRP(box, 'PointB', Vector2New(bottomLeftX, topRightY));
+            setRP(box, 'PointC', Vector2New(bottomLeftX, bottomLeftY));
+            setRP(box, 'PointD', Vector2New(topRightX, bottomLeftY));
+            setRP(box, 'Color', espColor);
+        else
+            setRP(box, 'Visible', false);
+        end;
+
+        if(toggleTracers) then
+            local linePosition = worldToViewportPoint(camera, rootPartPosition + tracerOffset);
+
+            setRP(line, 'Visible', visibleOnScreen);
+
+            setRP(line, 'From', unlockTracers and getMouseLocation(UserInputService) or self._viewportSize);
+            setRP(line, 'To', Vector2New(linePosition.X, linePosition.Y));
+            setRP(line, 'Color', espColor);
+        else
+            setRP(line, 'Visible', false);
+        end;
+
+        if(showHealthBar) then
+            local healthBarValueHealth = (1 - (floatHealth / 100)) * 7.4;
+
+            local healthBarTopRight = worldToViewportPoint(camera, rootPartPosition + healthBarOffsetTopRight);
+            local healthBarBottomLeft = worldToViewportPoint(camera, rootPartPosition + healthBarOffsetBottomLeft);
+
+            local healthBarTopRightX, healthBarTopRightY = healthBarTopRight.X, healthBarTopRight.Y;
+            local healthBarBottomLeftX, healthBarBottomLeftY = healthBarBottomLeft.X, healthBarBottomLeft.Y;
+
+            local healthBarValueTopRight = worldToViewportPoint(camera, rootPartPosition + healthBarValueOffsetTopRight - self:ConvertVector(0, healthBarValueHealth, 0));
+            local healthBarValueBottomLeft = worldToViewportPoint(camera, rootPartPosition - healthBarValueOffsetBottomLeft);
+
+            local healthBarValueTopRightX, healthBarValueTopRightY = healthBarValueTopRight.X, healthBarValueTopRight.Y;
+            local healthBarValueBottomLeftX, healthBarValueBottomLeftY = healthBarValueBottomLeft.X, healthBarValueBottomLeft.Y;
+
+            setRP(healthBar, 'Visible', visibleOnScreen);
+            setRP(healthBar, 'Color', espColor);
+
+            setRP(healthBar, 'PointA', Vector2New(healthBarTopRightX, healthBarTopRightY));
+            setRP(healthBar, 'PointB', Vector2New(healthBarBottomLeftX, healthBarTopRightY));
+            setRP(healthBar, 'PointC', Vector2New(healthBarBottomLeftX, healthBarBottomLeftY));
+            setRP(healthBar, 'PointD', Vector2New(healthBarTopRightX, healthBarBottomLeftY));
+
+            setRP(healthBarValue, 'Visible', visibleOnScreen);
+            setRP(healthBarValue, 'Color', lerp(ESP_RED_COLOR, ESP_GREEN_COLOR, floatHealth / 100));
+
+            setRP(healthBarValue, 'PointA', Vector2New(healthBarValueTopRightX, healthBarValueTopRightY));
+            setRP(healthBarValue, 'PointB', Vector2New(healthBarValueBottomLeftX, healthBarValueTopRightY));
+            setRP(healthBarValue, 'PointC', Vector2New(healthBarValueBottomLeftX, healthBarValueBottomLeftY));
+            setRP(healthBarValue, 'PointD', Vector2New(healthBarValueTopRightX, healthBarValueBottomLeftY));
+        else
+            setRP(healthBar, 'Visible', false);
+            setRP(healthBarValue, 'Visible', false);
+        end;
+    end;
+
+    function EntityESP:Destroy()
+        if (not self._label) then return end;
+
+        destroyRP(self._label);
+        self._label = nil;
+
+        destroyRP(self._box);
+        self._box = nil;
+
+        destroyRP(self._line);
+        self._line = nil;
+
+        destroyRP(self._healthBar);
+        self._healthBar = nil;
+
+        destroyRP(self._healthBarValue);
+        self._healthBarValue = nil;
+
+        destroyRP(self._triangle);
+        self._triangle = nil;
+    end;
+
+    function EntityESP:Hide(bypassTriangle)
+        if (not bypassTriangle) then
+            setRP(self._triangle, 'Visible', false);
+        end;
+
+        if (not self._visible) then return end;
+        self._visible = false;
+
+        setRP(self._label, 'Visible', false);
+        setRP(self._box, 'Visible', false);
+        setRP(self._line, 'Visible', false);
+
+        setRP(self._healthBar, 'Visible', false);
+        setRP(self._healthBarValue, 'Visible', false);
+    end;
+
+    function EntityESP:SetFont(font)
+        setRP(self._label, 'Font', font);
+    end;
+
+    function EntityESP:SetTextSize(textSize)
+        setRP(self._label, 'Size', textSize);
+    end;
+
+    local function updateESP()
+        local camera = workspace.CurrentCamera;
+        EntityESP._camera = camera;
+        if (not camera) then return end;
+
+        EntityESP._cameraCFrame = EntityESP._camera.CFrame;
+        EntityESP._cameraPosition = EntityESP._cameraCFrame.Position;
+
+        local viewportSize = camera.ViewportSize;
+
+        EntityESP._viewportSize = Vector2New(viewportSize.X / 2, viewportSize.Y - 10);
+        EntityESP._viewportSizeCenter = viewportSize / 2;
+
+        showTeam = flags.showTeam;
+        allyColor = flags.allyColor;
+        enemyColor = flags.enemyColor;
+        maxEspDistance = flags.maxEspDistance;
+        toggleBoxes = flags.toggleBoxes;
+        toggleTracers = flags.toggleTracers;
+        unlockTracers = flags.unlockTracers;
+        showHealthBar = flags.showHealthBar;
+        maxProximityArrowDistance = flags.maxProximityArrowDistance;
+        proximityArrows = flags.proximityArrows;
+
+        scalarSize = library.flags.proximityArrowsSize or 20;
+
+        scalarPointAX, scalarPointAY = scalarSize, scalarSize;
+        scalarPointBX, scalarPointBY = -scalarSize, -scalarSize;
+
+        labelOffset = EntityESP:ConvertVector(0, 3.25, 0);
+        tracerOffset = EntityESP:ConvertVector(0, -4.5, 0);
+
+        boxOffsetTopRight = EntityESP:ConvertVector(2.5, 3, 0);
+        boxOffsetBottomLeft = EntityESP:ConvertVector(-2.5, -4.5, 0);
+
+        healthBarOffsetTopRight = EntityESP:ConvertVector(-3, 3, 0);
+        healthBarOffsetBottomLeft = EntityESP:ConvertVector(-3.5, -4.5, 0);
+
+        healthBarValueOffsetTopRight = EntityESP:ConvertVector(-3.05, 2.95, 0);
+        healthBarValueOffsetBottomLeft = EntityESP:ConvertVector(3.45, 4.45, 0);
+    end;
+
+    updateESP();
+    RunService:BindToRenderStep(id, Enum.RenderPriority.Camera.Value, updateESP);
+end;
+
+return EntityESP;
+end)();
+sharedRequires['5ControlModule'] = (function()
+	local Services = sharedRequire('../11Services');
+local ContextActionService, HttpService = Services:Get('ContextActionService', 'HttpService');
+
+local ControlModule = {};
+
+do
+    ControlModule.__index = ControlModule
+
+    function ControlModule.new()
+        local self = {
+            forwardValue = 0,
+            backwardValue = 0,
+            leftValue = 0,
+            rightValue = 0
+        }
+
+        setmetatable(self, ControlModule)
+        self:init()
+        return self
+    end
+
+    function ControlModule:init()
+        local handleMoveForward = function(actionName, inputState, inputObject)
+            self.forwardValue = (inputState == Enum.UserInputState.Begin) and -1 or 0
+            return Enum.ContextActionResult.Pass
+        end
+
+        local handleMoveBackward = function(actionName, inputState, inputObject)
+            self.backwardValue = (inputState == Enum.UserInputState.Begin) and 1 or 0
+            return Enum.ContextActionResult.Pass
+        end
+
+        local handleMoveLeft = function(actionName, inputState, inputObject)
+            self.leftValue = (inputState == Enum.UserInputState.Begin) and -1 or 0
+            return Enum.ContextActionResult.Pass
+        end
+
+        local handleMoveRight = function(actionName, inputState, inputObject)
+            self.rightValue = (inputState == Enum.UserInputState.Begin) and 1 or 0
+            return Enum.ContextActionResult.Pass
+        end
+
+        ContextActionService:BindAction(HttpService:GenerateGUID(false), handleMoveForward, false, Enum.KeyCode.W);
+        ContextActionService:BindAction(HttpService:GenerateGUID(false), handleMoveBackward, false, Enum.KeyCode.S);
+        ContextActionService:BindAction(HttpService:GenerateGUID(false), handleMoveLeft, false, Enum.KeyCode.A);
+        ContextActionService:BindAction(HttpService:GenerateGUID(false), handleMoveRight, false, Enum.KeyCode.D);
+    end
+
+    function ControlModule:GetMoveVector()
+        return Vector3.new(self.leftValue + self.rightValue, 0, self.forwardValue + self.backwardValue)
+    end
+end
+
+return ControlModule.new();
+end)();
+sharedRequires['6createBaseESP'] = (function()
+local Maid = sharedRequire('13Maid');
+local Services = sharedRequire('11Services');
+
+local toCamelCase = sharedRequire('7toCamelCase');
+local library = sharedRequire('1library');
+
+local Players, CorePackages, HttpService = Services:Get('Players', 'CorePackages', 'HttpService');
+local LocalPlayer = Players.LocalPlayer;
+
+local NUM_ACTORS = 8;
+
+--[[
+	We'll add an example cuz I have no brain
+
+	local chestsESP = createBaseESP('chests'); -- This is the base ESP it returns a class with .new, .Destroy, :UpdateAll, :UnloadAll, and some other stuff
+
+	-- Listen to chests childAdded through Utility.listenToChildAdded and then create an espObject for that chest
+	-- chestsESP.new only accepts BasePart or CFrame
+	-- It has a lazy parameter allowing it to not update the get the position everyframe only get the screen position
+	-- Also a color parameter
+
+	Utility.listenToChildAdded(workspace.Chests, function(obj)
+		local espObject = chestsESP.new(obj, 'Normal Chest', color, isLazy);
+
+		obj.Destroying:Connect(function()
+			espObject:Destroy();
+		end);
+	end);
+
+	local function updateChestESP(toggle)
+		if (not toggle) then
+			maid.chestESP = nil;
+			chestsESP:UnloadAll();
+			return;
+		end;
+
+		maid.chestESP = RunService.Stepped:Connect(function()
+			chestsESP:UpdateAll();
+		end);
+	end;
+
+	-- UI Lib functions
+	:AddToggle({text = 'Enable', flag = 'chests', callback = updateChestESP});
+	:AddToggle({text = 'Show Distance', textpos = 2, flag = 'Chests Show Distance'});
+	:AddToggle({text = 'Show Normal Chest'}):AddColor({text = 'Normal Chest Color'}); -- Filer for if you want to see that chest and select the color of it
+]]
+
+sharedRequires['20createBaseESPParallel'] = (function()
+	return [[
+    local Players = game:GetService('Players');
+    local RunService = game:GetService('RunService');
+    local LocalPlayer = Players.LocalPlayer;
+
+    local camera, rootPart, rootPartPosition;
+
+    local originalCommEvent = ...;
+    local commEvent;
+
+    if (typeof(originalCommEvent) == 'table') then
+        commEvent = {
+            _event = originalCommEvent._event,
+
+            Connect = function(self, f)
+                return self._event.Event:Connect(f)
+            end,
+
+            Fire = function(self, ...)
+                self._event:Fire(...);
+            end
+        };
+    else
+        commEvent = getgenv().syn.get_comm_channel(originalCommEvent);
+    end;
+
+    local flags = {};
+
+    local updateTypes = {};
+
+    local BaseESPParallel = {};
+    BaseESPParallel.__index = BaseESPParallel;
+
+    local container = {};
+    local DEFAULT_ESP_COLOR = Color3.fromRGB(255, 255, 255);
+
+    local mFloor = math.floor;
+    local isSynapseV3 = not not gethui;
+
+    local worldToViewportPoint = Instance.new('Camera').WorldToViewportPoint;
+    local vector2New = Vector2.new;
+
+    local realSetRP;
+    local realDestroyRP;
+    local realGetRPProperty;
+
+    if (isSynapseV3) then
+        realGetRPProperty = function(self, p, v)
+            return self[p];
+        end;
+
+        realSetRP = function(self, p, v)
+            self[p] = v;
+        end;
+
+        realDestroyRP = function(self)
+            return self:Remove();
+        end;
+
+        realGetRPProperty = getRPProperty;
+    else
+        local lineUpvalues = getupvalue(Drawing.new, 4).__index;
+        local lineUpvalues2 = getupvalue(Drawing.new, 4).__newindex;
+
+        realSetRP = getupvalue(lineUpvalues2, 4);
+        realDestroyRP = getupvalue(lineUpvalues, 3);
+        realGetRPProperty = getupvalue(lineUpvalues, 4);
+
+        assert(realSetRP);
+        assert(realDestroyRP);
+        assert(realGetRPProperty);
+    end;
+
+
+    local updateDrawingQueue = {};
+    local destroyDrawingQueue = {};
+
+    local activeContainer = {};
+    local customInstanceCache = {};
+
+    local gameName;
+    local enableESPSearch = false;
+
+    local sLower = string.lower;
+    local sFind = string.find;
+
+    local findFirstChild = clonefunction(game.FindFirstChild);
+    local getAttribute = clonefunction(game.GetAttribute);
+
+    if (isSynapseV3) then
+        setRP = realSetRP;
+        getRPProperty = realGetRPProperty;
+    else
+        setRP = function(object, p, v)
+            local cache = object._cache;
+            local cacheVal = cache[p];
+            if (cacheVal == v) then return end;
+
+            cache[p] = v;
+            realSetRP(object.__OBJECT, p, v);
+        end;
+
+        getRPProperty = function(object, p)
+            local cacheVal = object._cache[p];
+            if (not cacheVal) then
+                object._cache[p] = realGetRPProperty(object.__OBJECT, p);
+                cacheVal = object._cache[p];
+            end;
+
+            return cacheVal;
+        end;
+    end;
+
+
+    function BaseESPParallel.new(data, showESPFlag, customInstance)
+        local self = setmetatable(data, BaseESPParallel);
+
+        if (customInstance) then
+            if (not customInstanceCache[data._code]) then
+                local func = loadstring(data._code);
+                getfenv(func).library = setmetatable({}, {__index = function(self, p) return flags end});
+
+                customInstanceCache[data._code] = func;
+            end;
+            self._instance = customInstanceCache[data._code](unpack(data._vars));
+        end;
+
+        local instance, tag, color, isLazy = self._instance, self._tag, self._color, self._isLazy;
+        self._showFlag2 = showESPFlag;
+
+
+		if (isSynapseV3 and typeof(instance) == 'Instance' and false) then
+			-- if (typeof(instance) == 'table') then
+			-- 	task.spawn(error, instance);
+			-- end;
+
+			self._label = TextDynamic.new(PointInstance.new(instance));
+			self._label.Color = DEFAULT_ESP_COLOR;
+			self._label.XAlignment = XAlignment.Center;
+			self._label.YAlignment = YAlignment.Center;
+			self._label.Outlined = true;
+			self._label.Text = string.format('[%s]', tag);
+		else
+			self._label = Drawing.new('Text');
+			self._label.Transparency = 1;
+			self._label.Color = color;
+			self._label.Text = '[' .. tag .. ']';
+			self._label.Center = true;
+			self._label.Outline = true;
+		end;
+
+		local flagValue = flags[self._showFlag];
+		-- self._object = isSynapseV3 and self._label or self._label.__OBJECT;
+
+		for i, v in next, self do
+            if (typeof(v) == 'table' and rawget(v, '__OBJECT')) then
+                rawset(v, '_cache', {});
+            end;
+        end;
+
+		container[self._id] = self;
+
+		if (isLazy) then
+			self._instancePosition = instance.Position;
+		end;
+
+        self:UpdateContainer();
+        return self;
+    end;
+
+	function BaseESPParallel:Destroy()
+		container[self._id] = nil;
+        if (table.find(activeContainer, self)) then
+            table.remove(activeContainer, table.find(activeContainer, self));
+        end;
+        table.insert(destroyDrawingQueue, self._label);
+    end;
+
+    function BaseESPParallel:Unload()
+        table.insert(updateDrawingQueue, {
+            label = self._label,
+            visible = false
+        });
+    end;
+
+	function BaseESPParallel:BaseUpdate(espSearch)
+		local instancePosition = self._instancePosition or self._instance.Position;
+		if (not instancePosition) then return self:Unload() end;
+
+		local distance = (rootPartPosition - instancePosition).Magnitude;
+		local maxDist = flags[self._maxDistanceFlag] or 10000;
+		if(distance >= maxDist and maxDist ~= 10000) then return self:Unload(); end;
+
+		local visibleState = flags[self._showFlag];
+		local label, text = self._label, self._text;
+
+		if(visibleState == nil) then
+			visibleState = true;
+		elseif (not visibleState) then
+			return self:Unload();
+		end;
+
+		-- if (isSynapseV3) then return end;
+
+		local position, visible = worldToViewportPoint(camera, instancePosition);
+		if(not visible) then return self:Unload(); end;
+
+		local newPos = vector2New(position.X, position.Y);
+
+		local labelText = '';
+
+		if (flags[self._showHealthFlag]) then
+            -- Custom instance do not touch they have custom funcs
+            local humanoid = self._instance:FindFirstChildWhichIsA('Humanoid') or self._instance.Parent and self._instance.Parent:FindFirstChild('Humanoid');
+
+            if (not humanoid) then
+                if (gameName == 'Arcane Odyssey') then
+                    local attributes = findFirstChild(self._instance.Parent, 'Attributes');
+                    if (attributes) then
+                        humanoid = {
+                            Health = attributes.Health.Value,
+                            MaxHealth = attributes.MaxHealth.Value,
+                        }
+                    end
+                elseif (gameName == 'Voxl Blade') then
+                    humanoid = {
+                        Health = getAttribute(self._instance, 'HP'),
+                        MaxHealth = getAttribute(self._instance, 'MAXHP'),
+                    }
+                end;
+            end;
+
+			if (humanoid) then
+				local health = mFloor(humanoid.Health);
+				local maxHealth = mFloor(humanoid.MaxHealth);
+
+				labelText = labelText .. '[' .. health .. '/' .. maxHealth ..']';
+			end;
+		end;
+
+		labelText = labelText .. '[' .. text .. ']';
+
+        local visible = true;
+
+        if (enableESPSearch and espSearch and not sFind(sLower(labelText), espSearch)) then
+            visible = false;
+        end;
+
+		local newColor = flags[self._colorFlag] or flags[self._colorFlag2] or DEFAULT_ESP_COLOR;
+
+		if (flags[self._showDistanceFlag]) then
+			labelText = labelText .. ' [' .. mFloor(distance) .. ']';
+		end;
+
+        table.insert(updateDrawingQueue, {
+            position = newPos,
+            color = newColor,
+            text = labelText,
+            label = label,
+            visible = visible
+        });
+	end;
+
+    function BaseESPParallel:UpdateContainer()
+        local showFlag, showFlag2 = self._showFlag, self._showFlag2;
+
+        if (flags[showFlag] == false or not flags[showFlag2]) then
+            local exists = table.find(activeContainer, self);
+            if (exists) then table.remove(activeContainer, exists); end;
+            self:Unload();
+        elseif (not table.find(activeContainer, self)) then
+            table.insert(activeContainer, self);
+        end;
+    end;
+
+    function updateTypes.new(data)
+        local showESPFlag = data.showFlag;
+        local isCustomInstance = data.isCustomInstance;
+        data = data.data;
+
+        BaseESPParallel.new(data, showESPFlag, isCustomInstance);
+    end;
+
+    function updateTypes.destroy(data)
+        task.desynchronize();
+        local id = data.id;
+
+        for _, v in next, container do
+            if (v._id == id) then
+                v:Destroy();
+            end;
+        end;
+    end;
+
+    local event;
+    local flagChanged;
+
+    local containerUpdated = false;
+
+    function updateTypes.giveEvent(data)
+        event = data.event;
+        gameName = data.gameName;
+
+        enableESPSearch = gameName == 'Voxl Blade' or gameName == 'DeepWoken' or gameName == 'Rogue Lineage';
+
+        event.Event:Connect(function(data)
+            if (data.type == 'color') then
+                flags[data.flag] = data.color;
+            elseif (data.type == 'slider') then
+                flags[data.flag] = data.value;
+            elseif (data.type == 'toggle') then
+                flags[data.flag] = data.state;
+            elseif (data.type == 'box') then
+                flags[data.flag] = data.value;
+            end;
+    
+            if (data.type ~= 'toggle' or containerUpdated) then return end;
+            containerUpdated = true;
+    
+            task.defer(function()
+                debug.profilebegin('containerUpdates');
+                for _, v in next, container do
+                    v:UpdateContainer();
+                end;
+                debug.profileend();
+    
+                containerUpdated = false;
+            end);
+        end);
+    end;
+
+    commEvent:Connect(function(data)
+        local f = updateTypes[data.updateType];
+        if (not f) then return end;
+        f(data);
+    end);
+
+    commEvent:Fire({updateType = 'ready'});
+
+    RunService.Heartbeat:Connect(function(deltaTime)
+        task.desynchronize();
+
+        camera = workspace.CurrentCamera;
+        rootPart = LocalPlayer.Character and LocalPlayer.Character.PrimaryPart;
+        rootPartPosition = rootPart and rootPart.Position;
+
+		if(not camera or not rootPart) then return; end;
+
+        local espSearch = enableESPSearch and flags.espSearch;
+
+        if (espSearch and espSearch ~= '') then
+            espSearch = sLower(espSearch);
+        end;
+
+        for i = 1, #activeContainer do
+            activeContainer[i]:BaseUpdate(espSearch);
+        end;
+
+        local goSerial = #updateDrawingQueue ~= 0 or #destroyDrawingQueue ~= 0;
+        if (goSerial) then task.synchronize(); end;
+        debug.profilebegin('updateDrawingQueue');
+
+        for i = 1, #updateDrawingQueue do
+            local v = updateDrawingQueue[i];
+            local label, position, visible, color, text = v.label, v.position, v.visible, v.color, v.text;
+
+            if (isSynapseV3) then
+                if (position) then
+                    label.Position = position;
+                end;
+    
+                if (visible ~= nil) then
+                    label.Visible = visible;
+                end;
+    
+                if (color) then
+                    label.Color = color;
+                end;
+    
+                if (text) then
+                    label.Text = text;
+                end;
+            else                
+                if (position) then
+                    setRP(label, 'Position', position);
+                end;
+    
+                if (visible ~= nil) then
+                    setRP(label, 'Visible', visible);
+                end;
+    
+                if (color) then
+                    setRP(label, 'Color', color);
+                end;
+    
+                if (text) then
+                    setRP(label, 'Text', text);
+                end;
+            end;
+        end;
+
+        debug.profileend();
+        debug.profilebegin('destroyDrawingQueue');
+
+        for i = 1, #destroyDrawingQueue do
+            destroyDrawingQueue[i]:Remove();
+        end;
+
+        debug.profileend();
+        debug.profilebegin('table clear');
+
+        updateDrawingQueue = {};
+        destroyDrawingQueue = {};
+
+        debug.profileend();
+    end);
+]];
+end)();
+
+local playerScripts = LocalPlayer:WaitForChild('PlayerScripts')
+
+local playerScriptsLoader = playerScripts:FindFirstChild('PlayerScriptsLoader');
+local actors = {};
+
+local readyCount = 0;
+local broadcastEvent = Instance.new('BindableEvent');
+
+local supportedGamesList = HttpService:JSONDecode(sharedRequire('../../gameList.json'));
+local gameName = supportedGamesList[tostring(game.GameId)];
+
+if (not playerScriptsLoader and gameName == 'Apocalypse Rising 2') then
+	playerScriptsLoader = playerScripts:FindFirstChild('FreecamDelete');
+end;
+
+if (playerScriptsLoader) then
+	for _ = 1, NUM_ACTORS do
+		local commId, commEvent;
+
+		if (isSynapseV3) then
+			commEvent = {
+				_event = Instance.new('BindableEvent'),
+
+				Connect = function(self, f)
+					return self._event.Event:Connect(f)
+				end,
+
+				Fire = function(self, ...)
+					self._event:Fire(...);
+				end
+			};
+		else
+			commId, commEvent = getgenv().syn.create_comm_channel();
+		end;
+
+		local clone = playerScriptsLoader:Clone();
+		local actor = Instance.new('Actor');
+		clone.Parent = actor;
+
+		local playerModule = CorePackages.InGameServices.MouseIconOverrideService:Clone();
+		playerModule.Name = 'PlayerModule';
+		playerModule.Parent = actor;
+
+		if (not isSynapseV3) then
+			syn.protect_gui(actor);
+		end;
+
+		actor.Parent = LocalPlayer.PlayerScripts;
+
+		local connection;
+
+		connection = commEvent:Connect(function(data)
+			if (data.updateType == 'ready') then
+				commEvent:Fire({updateType = 'giveEvent', event = broadcastEvent, gameName = gameName});
+				actor:Destroy();
+
+				readyCount += 1;
+
+				connection:Disconnect();
+				connection = nil;
+			end;
+		end);
+
+		originalFunctions.runOnActor(actor, sharedRequire('20createBaseESPParallel'), commId or commEvent);
+		table.insert(actors, {
+			actor = actor,
+			commEvent = commEvent
+		});
+	end;
+
+	print('Waiting for actors');
+	repeat task.wait(); until readyCount >= NUM_ACTORS;
+	print('All actors have been loaded');
+else
+	local commId, commEvent = getgenv().syn.create_comm_channel();
+
+	local connection;
+	connection = commEvent:Connect(function(data)
+		if (data.updateType == 'ready') then
+			connection:Disconnect();
+			connection = nil;
+
+			commEvent:Fire({updateType = 'giveEvent', event = broadcastEvent});
+		end;
+	end);
+
+	loadstring(sharedRequire('20createBaseESPParallel'))(commId);
+
+	table.insert(actors, {commEvent = commEvent});
+	readyCount = 1;
+end;
+
+local count = 1;
+
+local function createBaseEsp(flag, container)
+	container = container or {};
+	local BaseEsp = {};
+
+	BaseEsp.ClassName = 'BaseEsp';
+	BaseEsp.Flag = flag;
+	BaseEsp.Container = container;
+	BaseEsp.__index = BaseEsp;
+
+	local whiteColor = Color3.new(1, 1, 1);
+
+	local maxDistanceFlag = BaseEsp.Flag .. 'MaxDistance';
+	local showHealthFlag = BaseEsp.Flag .. 'ShowHealth';
+	local showESPFlag = BaseEsp.Flag;
+
+	function BaseEsp.new(instance, tag, color, isLazy)
+		assert(instance, '#1 instance expected');
+		assert(tag, '#2 tag expected');
+
+		local isCustomInstance = false;
+
+		if (typeof(instance) == 'table' and rawget(instance, 'code')) then
+			isCustomInstance = true;
+		end;
+
+		color = color or whiteColor;
+
+		local self = setmetatable({}, BaseEsp);
+		self._tag = tag;
+
+		local displayName = tag;
+
+		if (typeof(tag) == 'table') then
+			displayName = tag.displayName;
+			self._tag = tag.tag;
+		end;
+
+		self._instance = instance;
+		self._text = displayName;
+		self._color = color;
+		self._showFlag = toCamelCase('Show ' .. self._tag);
+		self._colorFlag = toCamelCase(self._tag .. ' Color');
+		self._colorFlag2 = BaseEsp.Flag .. 'Color';
+		self._showDistanceFlag = BaseEsp.Flag .. 'ShowDistance';
+		self._isLazy = isLazy;
+		self._actor = actors[(count % readyCount) + 1];
+		self._id = count;
+		self._maid = Maid.new();
+
+		count += 1;
+
+		if (isLazy and not isCustomInstance) then
+			self._instancePosition = instance.Position;
+		end;
+
+		self._maxDistanceFlag = maxDistanceFlag;
+		self._showHealthFlag = showHealthFlag;
+
+		if (isCustomInstance) then
+			self._isCustomInstance = true;
+			self._code = instance.code;
+			self._vars = instance.vars;
+		end;
+
+		local smallData = table.clone(self);
+		smallData._actor = nil;
+		self._actor.commEvent:Fire({
+			updateType = 'new',
+			data = smallData,
+			isCustomInstance = isCustomInstance,
+			showFlag = showESPFlag
+		});
+
+
+		return self;
+	end;
+
+	function BaseEsp:Unload() end;
+	function BaseEsp:BaseUpdate() end;
+	function BaseEsp:UpdateAll() end;
+	function BaseEsp:Update() end;
+	function BaseEsp:UnloadAll() end;
+	function BaseEsp:Disable() end;
+
+	function BaseEsp:Destroy()
+		self._maid:Destroy();
+		self._actor.commEvent:Fire({
+			updateType = 'destroy',
+			id = self._id
+		});
+	end;
+
+	return BaseEsp;
+end;
+
+library.OnFlagChanged:Connect(function(data)
+	broadcastEvent:Fire({
+		type = data.type,
+		flag = data.flag,
+		color = data.color,
+		state = data.state,
+		value = data.value
+	});
+end);
+
+return createBaseEsp;
+
+end)();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local library = sharedRequires['1library'];
+local ToastNotif = sharedRequire('2ToastNotif');
+local TextLogger = sharedRequire('33TextLogger');
+local EntityESP = sharedRequire('4EntityESP');
+local ControlModule = sharedRequire('5ControlModule');
+local createBaseESP = sharedRequire('6createBaseESP');
+local toCamelCase = sharedRequire('7toCamelCase');
+local prettyPrint = sharedRequire('8prettyPrint');
+local findPlayer = sharedRequire('9findPlayer');
+local getImageSize = sharedRequire('10getImageSize');
+local Services = sharedRequire('11Services');
+local Utility = sharedRequire('12Utility');
+local Maid = sharedRequire('13Maid');
+local BlockUtils = sharedRequire('14BlockUtils');
 
 local column1, column2 = unpack(library.columns);
 
