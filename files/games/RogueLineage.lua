@@ -1,5 +1,5 @@
 sharedRequires['16AltManagerAPI'] = (function()
-	local Account = {} Account.__index = Account
+local Account = {} Account.__index = Account
 
 local WebserverSettings = {
     Port = '7963',
